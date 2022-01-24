@@ -116,9 +116,9 @@ struct Object {
 };
 
 namespace Keyword {
-const std::string_view KW_TOKENS[] = {"let", "del", "while", "do", "end", "if", "else", "elif", "then", "try", "catch", "until", "repeat", "break", "continue"};
+const std::string_view KW_TOKENS[] = {"let", "del", "while", "do", "end", "if", "else", "elif", "then", "try", "catch", "until", "repeat", "break", "continue", "for"};
 enum {
-    LET, DEL, WHILE, DO, END, IF, ELSE, ELIF, THEN, TRY, CATCH, UNTIL, REPEAT, BREAK, CONTINUE,
+    LET, DEL, WHILE, DO, END, IF, ELSE, ELIF, THEN, TRY, CATCH, UNTIL, REPEAT, BREAK, CONTINUE, FOR,
 
     NAK // not a keyword
 };
@@ -139,8 +139,9 @@ struct ScriptEngine {
     [[nodiscard]] std::unique_ptr<ExprNode> compileExpression(std::vector<Token> tokens);
     [[nodiscard]] std::unique_ptr<StmtNode> compileStatement(std::vector<Token> tokens);
     [[nodiscard]] std::unique_ptr<StmtNode> compileWhile(Token*& current);
-    [[nodiscard]] std::unique_ptr<StmtNode> compileDo(Token*& current);
     [[nodiscard]] std::unique_ptr<StmtNode> compileRepeat(Token*& current);
+    [[nodiscard]] std::unique_ptr<StmtNode> compileFor(Token*& current);
+    [[nodiscard]] std::unique_ptr<StmtNode> compileDo(Token*& current);
     [[nodiscard]] std::unique_ptr<StmtNode> compileIf(Token*& current);
     [[nodiscard]] std::unique_ptr<StmtNode> compileTry(Token*& current);
     [[nodiscard]] std::unique_ptr<StmtNode> compileStatements(Token*& current);
@@ -295,6 +296,46 @@ struct WhileNode : StmtNode {
     }
 };
 
+struct RepeatNode : StmtNode {
+    ScriptEngine* engine;
+    std::unique_ptr<StmtNode> loop;
+    std::unique_ptr<ExprNode> cond;
+    RepeatNode(ScriptEngine* engine,
+               std::unique_ptr<StmtNode> loop,
+               std::unique_ptr<ExprNode> cond = std::make_unique<ValNode>(0, 0))
+            : engine(engine), loop(std::move(loop)), cond(std::move(cond)) {}
+    void exec() const override {
+        engine->scopes.emplace_back();
+        try {
+            do try { loop->exec(); } catch (ScriptContinue) {}
+            while (!cond->eval().val());
+        } catch (ScriptBreak) {}
+        engine->scopes.pop_back();
+    }
+};
+
+struct ForNode : StmtNode {
+    ScriptEngine* engine;
+    std::unique_ptr<StmtNode> init;
+    std::unique_ptr<ExprNode> cond;
+    std::unique_ptr<ExprNode> iter;
+    std::unique_ptr<StmtNode> loop;
+    ForNode(ScriptEngine* engine,
+            std::unique_ptr<StmtNode> init,
+            std::unique_ptr<ExprNode> cond,
+            std::unique_ptr<ExprNode> iter,
+            std::unique_ptr<StmtNode> loop)
+            : engine(engine), init(std::move(init)), cond(std::move(cond)), iter(std::move(iter)), loop(std::move(loop)) {}
+    void exec() const override {
+        engine->scopes.emplace_back();
+        try {
+            for(init->exec(); cond->eval().val(); iter->eval())
+                try { loop->exec(); } catch (ScriptContinue) {}
+        } catch (ScriptBreak) {}
+        engine->scopes.pop_back();
+    }
+};
+
 struct DoNode : StmtNode {
     ScriptEngine* engine;
     std::unique_ptr<StmtNode> stmt;
@@ -304,24 +345,6 @@ struct DoNode : StmtNode {
     void exec() const override {
         engine->scopes.emplace_back();
         stmt->exec();
-        engine->scopes.pop_back();
-    }
-};
-
-struct RepeatNode : StmtNode {
-    ScriptEngine* engine;
-    std::unique_ptr<StmtNode> loop;
-    std::unique_ptr<ExprNode> cond;
-    RepeatNode(ScriptEngine* engine,
-               std::unique_ptr<StmtNode> loop,
-               std::unique_ptr<ExprNode> cond = std::make_unique<ValNode>(0, 0))
-            : engine(engine), cond(std::move(cond)), loop(std::move(loop)) {}
-    void exec() const override {
-        engine->scopes.emplace_back();
-        try {
-            do try { loop->exec(); } catch (ScriptContinue) {}
-            while (!cond->eval().val());
-        } catch (ScriptBreak) {}
         engine->scopes.pop_back();
     }
 };
@@ -443,7 +466,6 @@ inline const Operator OPERATORS[] = {
         {1, RIGHT_TO_LEFT, INFIX, "|=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() |= rhs->eval().val(); }},
         {1, RIGHT_TO_LEFT, PREFIX, "print", [](ScriptEngine* engine, ExprNode* op) { return std::fprintf(engine->out, "%d\n", op->eval().val()) - 1; }},
         {1, RIGHT_TO_LEFT, PREFIX, "throw", [](ExprNode* op)->Object { throw ScriptException{op->eval().val(), op->line}; }},
-        {0, LEFT_TO_RIGHT, INFIX, ",",      [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val(), rhs->eval().val(); }}
 };
 
 [[nodiscard]] inline int parseOp(std::string const& token, OperandType operandType) {

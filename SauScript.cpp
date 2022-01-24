@@ -123,7 +123,7 @@ int normalize(std::vector<Token>& tokens, int i = 0) {
     return tokens;
 }
 
-std::optional<Object> ScriptEngine::findObject(const std::string &name) {
+std::optional<Object> ScriptEngine::findObject(const std::string& name) {
     for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
         auto&& scope = *it;
         if (scope.contains(name)) return &scope[name];
@@ -191,9 +191,9 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatement(std::vector<Token> toke
     return std::make_unique<StmtExprNode>(compileExpression(tokens));
 }
 
-std::unique_ptr<StmtNode> ScriptEngine::compileWhile(Token *&current) {
-    Token* first = ++current;
+std::unique_ptr<StmtNode> ScriptEngine::compileWhile(Token*& current) {
     using namespace Keyword;
+    Token* first = ++current;
     while (*current != Token::keyword(DO)) {
         if (current->type == TokenType::EOT) throw SyntaxError("missing do in while at line " + first->at());
         ++current;
@@ -204,14 +204,7 @@ std::unique_ptr<StmtNode> ScriptEngine::compileWhile(Token *&current) {
     return std::make_unique<WhileNode>(this, std::move(cond), std::move(stmt));
 }
 
-std::unique_ptr<StmtNode> ScriptEngine::compileDo(Token *&current) {
-    using namespace Keyword;
-    auto stmt = compileStatements(++current);
-    if (*current != Token::keyword(END)) throw SyntaxError("missing end in do at line " + current->at());
-    return std::make_unique<DoNode>(this, std::move(stmt));
-}
-
-std::unique_ptr<StmtNode> ScriptEngine::compileRepeat(Token *&current) {
+std::unique_ptr<StmtNode> ScriptEngine::compileRepeat(Token*& current) {
     using namespace Keyword;
     auto stmt = compileStatements(++current);
     if (current->type == TokenType::KEYWORD)
@@ -230,9 +223,41 @@ std::unique_ptr<StmtNode> ScriptEngine::compileRepeat(Token *&current) {
     throw SyntaxError("end or until is expected at line " + current->at());
 }
 
-std::unique_ptr<StmtNode> ScriptEngine::compileIf(Token *&current) {
-    Token* first = ++current;
+std::unique_ptr<StmtNode> ScriptEngine::compileFor(Token*& current) {
     using namespace Keyword;
+    Token* first = ++current;
+    while (*current != Token::linebreak()) {
+        if (current->type == TokenType::EOT) throw SyntaxError("missing first linebreak in for at line " + first->at());
+        ++current;
+    }
+    auto init = compileStatement({first, current});
+    first = ++current;
+    while (*current != Token::linebreak()) {
+        if (current->type == TokenType::EOT) throw SyntaxError("missing second linebreak in for at line " + first->at());
+        ++current;
+    }
+    auto cond = compileExpression({first, current});
+    first = ++current;
+    while (*current != Token::keyword(DO)) {
+        if (current->type == TokenType::EOT) throw SyntaxError("missing do in for at line " + first->at());
+        ++current;
+    }
+    auto iter = compileExpression({first, current});
+    auto stmt = compileStatements(++current);
+    if (*current != Token::keyword(END)) throw SyntaxError("missing end in for at line " + current->at());
+    return std::make_unique<ForNode>(this, std::move(init), std::move(cond), std::move(iter), std::move(stmt));
+}
+
+std::unique_ptr<StmtNode> ScriptEngine::compileDo(Token*& current) {
+    using namespace Keyword;
+    auto stmt = compileStatements(++current);
+    if (*current != Token::keyword(END)) throw SyntaxError("missing end in do at line " + current->at());
+    return std::make_unique<DoNode>(this, std::move(stmt));
+}
+
+std::unique_ptr<StmtNode> ScriptEngine::compileIf(Token*& current) {
+    using namespace Keyword;
+    Token* first = ++current;
     while (*current != Token::keyword(THEN)) {
         if (current->type == TokenType::EOT) throw SyntaxError("missing then in if at line " + first->at());
         ++current;
@@ -256,7 +281,7 @@ std::unique_ptr<StmtNode> ScriptEngine::compileIf(Token *&current) {
     throw SyntaxError("end, else or elif is expected at line " + current->at());
 }
 
-std::unique_ptr<StmtNode> ScriptEngine::compileTry(Token *&current) {
+std::unique_ptr<StmtNode> ScriptEngine::compileTry(Token*& current) {
     using namespace Keyword;
     auto try_ = compileStatements(++current);
     if (*current != Token::keyword(CATCH)) throw SyntaxError("try without catch at line " + current->at());
@@ -267,7 +292,7 @@ std::unique_ptr<StmtNode> ScriptEngine::compileTry(Token *&current) {
     return std::make_unique<TryNode>(this, std::move(try_), name, std::move(catch_));
 }
 
-std::unique_ptr<StmtNode> ScriptEngine::compileStatements(Token *&current) {
+std::unique_ptr<StmtNode> ScriptEngine::compileStatements(Token*& current) {
     std::vector<std::unique_ptr<StmtNode>> stmts;
     for (std::vector<Token> line; current->type != TokenType::EOT; ++current) {
         using namespace Keyword;
@@ -279,11 +304,14 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatements(Token *&current) {
                     case WHILE:
                         stmts.push_back(compileWhile(current));
                         continue;
-                    case DO:
-                        stmts.push_back(compileDo(current));
-                        continue;
                     case REPEAT:
                         stmts.push_back(compileRepeat(current));
+                        continue;
+                    case FOR:
+                        stmts.push_back(compileFor(current));
+                        continue;
+                    case DO:
+                        stmts.push_back(compileDo(current));
                         continue;
                     case IF:
                         stmts.push_back(compileIf(current));
@@ -309,13 +337,13 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatements(Token *&current) {
     return std::make_unique<StmtSeqNode>(std::move(stmts));
 }
 
-std::unique_ptr<StmtNode> ScriptEngine::compile(const char *script) {
+std::unique_ptr<StmtNode> ScriptEngine::compile(const char* script) {
     auto tokens = tokenize(script);
     Token* current = tokens.data();
     return compileStatements(current);
 }
 
-void ScriptEngine::exec(const char *script, FILE *err) {
+void ScriptEngine::exec(const char* script, FILE* err) {
     try {
         compile(script)->exec();
     } catch (ScriptBreak e) {
