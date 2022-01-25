@@ -11,19 +11,19 @@
 #include <cstdio>
 #include <cstring>
 #include <string_view>
+#include <cstdint>
 
 namespace SauScript {
 
-struct ScriptException { int thrown, line; };
-struct ScriptBreak { int line; };
-struct ScriptContinue { int line; };
-
+struct Number;
 struct Token;
-struct Object;
+struct Operand;
 struct Operator;
 struct ScriptEngine;
 struct ExprNode;
 struct StmtNode;
+struct ScriptBreak { int line; };
+struct ScriptContinue { int line; };
 
 struct SyntaxError : std::logic_error {
     SyntaxError(std::string const& msg): std::logic_error(msg) {}
@@ -31,6 +31,12 @@ struct SyntaxError : std::logic_error {
 
 struct RuntimeError : std::runtime_error {
     RuntimeError(std::string const& msg): std::runtime_error(msg) {}
+};
+
+template<typename... Ts>
+struct overloaded : Ts... {
+    explicit overloaded(Ts... ts): Ts(ts)... {}
+    using Ts::operator()...;
 };
 
 inline std::string toLineString(int line) {
@@ -73,45 +79,52 @@ inline bool isNumberStart(char ch) {
     return std::isdigit(ch);
 }
 
-inline bool isNumberContinue(char ch) {
-    return std::isalnum(ch) || ch == '_';
-}
+using int_t = std::int64_t;
+using real_t = double;
 
-inline int parseNumber(int line, std::string x) try {
-    if (x == "false") return 0;
-    if (x == "true") return 1;
-    std::erase(x, '_');
-    return std::stoi(x, nullptr, 0);
-} catch(...) {
-    throw SyntaxError("invalid number literal at line " + toLineString(line));
-}
+struct Number {
+    std::variant<int_t, real_t> object;
 
-inline int assertNonZero(int line, int x) {
-    if (x == 0) throw RuntimeError("divided by zero at line " + toLineString(line));
-    return x;
-}
+    Number() = default;
+    Number(std::variant<int_t, real_t> object): object(object) {}
 
-inline int assertNonNeg(int line, int x) {
-    if (x < 0) throw RuntimeError("negative shift count at line " + toLineString(line));
-    return x;
-}
+    [[nodiscard]] bool asBool(int line) {
+        if (std::holds_alternative<int_t>(object))
+            return std::get<int_t>(object) != 0;
+        throw RuntimeError("expected int as bool at line " + toLineString(line));
+    }
+};
 
-struct Object {
-    std::variant<int, int*> val_or_ref;
-    Object(Object const&) = default;
-    Object(int val): val_or_ref(val) {}
-    Object(int* ref): val_or_ref(ref) {}
+struct ScriptException : std::exception {
+    Number thrown;
+    std::string msg;
 
-    int val() const {
+    ScriptException(Number thrown, int line): thrown(thrown),
+                                              msg("Unhandled script exception thrown at line " + toLineString(line)) {}
+
+    [[nodiscard]] char const* what() const noexcept override {
+        return msg.c_str();
+    }
+};
+
+
+struct Operand {
+    std::variant<Number, Number*> val_or_ref;
+    Operand(Operand const&) = default;
+    Operand(Number val): val_or_ref(val) {}
+    Operand(Number* ref): val_or_ref(ref) {}
+
+    Number val() const {
         static const struct {
-            int operator()(int i) const { return i; }
-            int operator()(int* i) const { return *i; }
+            Number operator()(Number i) const { return i; }
+            Number operator()(Number* i) const { return *i; }
         } ValueVisitor;
         return std::visit(ValueVisitor, val_or_ref);
     }
-    int& ref() const {
-        if (std::holds_alternative<int>(val_or_ref)) throw RuntimeError("rvalue cannot be used as lvalue");
-        return *std::get<int*>(val_or_ref);
+    Number* ref(int line) const {
+        if (std::holds_alternative<Number*>(val_or_ref))
+            return std::get<Number*>(val_or_ref);
+        throw RuntimeError("rvalue cannot be used as lvalue at line " + toLineString(line));
     }
 };
 
@@ -131,11 +144,11 @@ inline int parse(std::string const& kw) {
 }
 
 struct ScriptEngine {
-    std::vector<std::map<std::string, int>> scopes{{{"__cplusplus", __cplusplus}}};
+    std::vector<std::map<std::string, Number>> scopes{{{"__cplusplus", {__cplusplus}}}};
     FILE *out, *in;
     ScriptEngine(FILE* out = stdout, FILE* in = stdin): out(out), in(in) {}
 
-    std::optional<Object> findObject(std::string const& name);
+    std::optional<Operand> findOperand(std::string const& name);
     [[nodiscard]] std::unique_ptr<ExprNode> compileExpression(std::vector<Token> tokens);
     [[nodiscard]] std::unique_ptr<StmtNode> compileStatement(std::vector<Token> tokens);
     [[nodiscard]] std::unique_ptr<StmtNode> compileWhile(Token*& current);
@@ -153,16 +166,16 @@ struct ScriptEngine {
 struct ExprNode {
     int line;
     ExprNode(int line): line(line) {}
-    virtual Object eval() const = 0;
+    virtual Operand eval() const = 0;
     virtual ~ExprNode() = default;
 };
 
 struct ObjNode : virtual ExprNode {};
 
 struct ValNode : ObjNode {
-    int val;
-    ValNode(int line, int val): ExprNode(line), val(val) {}
-    Object eval() const override {
+    Number val;
+    ValNode(int line, Number val): ExprNode(line), val(val) {}
+    Operand eval() const override {
         return val;
     }
 };
@@ -171,9 +184,9 @@ struct RefNode : ObjNode {
     ScriptEngine* engine;
     std::string name;
     RefNode(ScriptEngine* engine, int line, std::string name): engine(engine), ExprNode(line), name(std::move(name)) {}
-    Object eval() const override {
-        if (auto object = engine->findObject(name))
-            return object.value();
+    Operand eval() const override {
+        if (auto operand = engine->findOperand(name))
+            return operand.value();
         throw RuntimeError("reference to undefined variable '" + name + "' at line " + toLineString(line));
     }
 };
@@ -182,21 +195,21 @@ struct OpNode : virtual ExprNode {};
 
 struct OpUnaryNode : OpNode {
     std::unique_ptr<ExprNode> operand;
-    using Fn = std::function<Object(ExprNode*)>;
+    using Fn = std::function<Operand(ExprNode*)>;
     Fn fn;
     OpUnaryNode(int line,
                 std::unique_ptr<ExprNode> lhs,
                 Fn fn): ExprNode(line),
                         operand(std::move(lhs)), fn(std::move(fn)) {}
 
-    Object eval() const override {
+    Operand eval() const override {
         return fn(operand.get());
     }
 };
 
 struct OpBinaryNode : OpNode {
     std::unique_ptr<ExprNode> lhs, rhs;
-    using Fn = std::function<Object(ExprNode*, ExprNode*)>;
+    using Fn = std::function<Operand(ExprNode*, ExprNode*)>;
     Fn fn;
     OpBinaryNode(int line,
                  std::unique_ptr<ExprNode> lhs,
@@ -204,7 +217,7 @@ struct OpBinaryNode : OpNode {
                  Fn fn): ExprNode(line),
                          lhs(std::move(lhs)), rhs(std::move(rhs)), fn(std::move(fn)) {}
 
-    Object eval() const override {
+    Operand eval() const override {
         return fn(lhs.get(), rhs.get());
     }
 };
@@ -245,7 +258,7 @@ struct LetNode : StmtNode {
             : engine(engine), line(line), name(std::move(name)), initializer(std::move(initializer)) {}
     void exec() const override {
         if (engine->scopes.back().contains(name)) throw RuntimeError(name + " already exists in the current scope at line " + toLineString(line));
-        int val = initializer->eval().val();
+        Number val = initializer->eval().val();
         engine->scopes.back()[name] = val;
     }
 };
@@ -289,7 +302,7 @@ struct WhileNode : StmtNode {
     void exec() const override {
         engine->scopes.emplace_back();
         try {
-            while (cond->eval().val())
+            while (cond->eval().val().asBool(cond->line))
                 try { loop->exec(); } catch (ScriptContinue) {}
         } catch (ScriptBreak) {}
         engine->scopes.pop_back();
@@ -302,13 +315,13 @@ struct RepeatNode : StmtNode {
     std::unique_ptr<ExprNode> cond;
     RepeatNode(ScriptEngine* engine,
                std::unique_ptr<StmtNode> loop,
-               std::unique_ptr<ExprNode> cond = std::make_unique<ValNode>(0, 0))
+               std::unique_ptr<ExprNode> cond = std::make_unique<ValNode>(0, Number{0}))
             : engine(engine), loop(std::move(loop)), cond(std::move(cond)) {}
     void exec() const override {
         engine->scopes.emplace_back();
         try {
             do try { loop->exec(); } catch (ScriptContinue) {}
-            while (!cond->eval().val());
+            while (!cond->eval().val().asBool(cond->line));
         } catch (ScriptBreak) {}
         engine->scopes.pop_back();
     }
@@ -329,7 +342,7 @@ struct ForNode : StmtNode {
     void exec() const override {
         engine->scopes.emplace_back();
         try {
-            for(init->exec(); cond->eval().val(); iter->eval())
+            for(init->exec(); cond->eval().val().asBool(cond->line); iter->eval())
                 try { loop->exec(); } catch (ScriptContinue) {}
         } catch (ScriptBreak) {}
         engine->scopes.pop_back();
@@ -361,7 +374,7 @@ struct IfNode : StmtNode {
             : engine(engine), cond(std::move(cond)), then(std::move(then)), else_(std::move(else_)) {}
     void exec() const override {
         engine->scopes.emplace_back();
-        if (cond->eval().val()) then->exec(); else else_->exec();
+        if (cond->eval().val().asBool(cond->line)) then->exec(); else else_->exec();
         engine->scopes.pop_back();
     }
 };
@@ -380,7 +393,7 @@ struct TryNode : StmtNode {
         engine->scopes.emplace_back();
         try_->exec();
         engine->scopes.pop_back();
-    } catch (ScriptException e) {
+    } catch (ScriptException& e) {
         engine->scopes.push_back({{name, e.thrown}});
         catch_->exec();
         engine->scopes.pop_back();
@@ -401,9 +414,9 @@ struct Operator {
     OperandType operandType;
     std::string_view literal;
     using Unary = OpUnaryNode::Fn;
-    using EUnary = std::function<Object(ScriptEngine*, ExprNode*)>;
+    using EUnary = std::function<Operand(ScriptEngine*, ExprNode*)>;
     using Binary = OpBinaryNode::Fn;
-    using EBinary = std::function<Object(ScriptEngine*, ExprNode*, ExprNode*)>;
+    using EBinary = std::function<Operand(ScriptEngine*, ExprNode*, ExprNode*)>;
     using Fn = std::variant<Unary, EUnary, Binary, EBinary>;
     Fn fn;
     [[nodiscard]] std::unique_ptr<ExprNode> apply(ScriptEngine* engine, int line, std::stack<std::unique_ptr<ExprNode>>& operands) const {
@@ -425,48 +438,7 @@ struct Operator {
     }
 };
 
-inline const Operator OPERATORS[] = {
-        {15, LEFT_TO_RIGHT, POSTFIX, "++",  [](ExprNode* op) { return op->eval().ref()++; }},
-        {15, LEFT_TO_RIGHT, POSTFIX, "--",  [](ExprNode* op) { return op->eval().ref()--; }},
-        {14, RIGHT_TO_LEFT, PREFIX, "++",   [](ExprNode* op) { return &++op->eval().ref(); }},
-        {14, RIGHT_TO_LEFT, PREFIX, "--",   [](ExprNode* op) { return &--op->eval().ref(); }},
-        {14, RIGHT_TO_LEFT, PREFIX, "+",    [](ExprNode* op) { return +op->eval().val(); }},
-        {14, RIGHT_TO_LEFT, PREFIX, "-",    [](ExprNode* op) { return -op->eval().val(); }},
-        {14, RIGHT_TO_LEFT, PREFIX, "!",    [](ExprNode* op) { return !op->eval().val(); }},
-        {14, RIGHT_TO_LEFT, PREFIX, "~",    [](ExprNode* op) { return ~op->eval().val(); }},
-        {14, RIGHT_TO_LEFT, PREFIX, "input",[](ScriptEngine* engine, ExprNode* op) { return fscanf(engine->in, "%d", &op->eval().ref()); }},
-        {12, LEFT_TO_RIGHT, INFIX, "*",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() * rhs->eval().val(); }},
-        {12, LEFT_TO_RIGHT, INFIX, "/",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() / assertNonZero(rhs->line, rhs->eval().val()); }},
-        {12, LEFT_TO_RIGHT, INFIX, "%",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() % assertNonZero(rhs->line, rhs->eval().val()); }},
-        {11, LEFT_TO_RIGHT, INFIX, "+",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() + rhs->eval().val(); }},
-        {11, LEFT_TO_RIGHT, INFIX, "-",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() - rhs->eval().val(); }},
-        {10, LEFT_TO_RIGHT, INFIX, "<<",    [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() << assertNonNeg(rhs->line, rhs->eval().val()); }},
-        {10, LEFT_TO_RIGHT, INFIX, ">>",    [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() >> assertNonNeg(rhs->line, rhs->eval().val()); }},
-        {8, LEFT_TO_RIGHT, INFIX, "<",      [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() < rhs->eval().val(); }},
-        {8, LEFT_TO_RIGHT, INFIX, ">",      [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() > rhs->eval().val(); }},
-        {8, LEFT_TO_RIGHT, INFIX, "<=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() <= rhs->eval().val(); }},
-        {8, LEFT_TO_RIGHT, INFIX, ">=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() >= rhs->eval().val(); }},
-        {7, LEFT_TO_RIGHT, INFIX, "==",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() == rhs->eval().val(); }},
-        {7, LEFT_TO_RIGHT, INFIX, "!=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() != rhs->eval().val(); }},
-        {6, LEFT_TO_RIGHT, INFIX, "&",      [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() & rhs->eval().val(); }},
-        {5, LEFT_TO_RIGHT, INFIX, "^",      [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() ^ rhs->eval().val(); }},
-        {4, LEFT_TO_RIGHT, INFIX, "|",      [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() | rhs->eval().val(); }},
-        {3, LEFT_TO_RIGHT, INFIX, "&&",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() && rhs->eval().val(); }},
-        {2, LEFT_TO_RIGHT, INFIX, "||",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().val() || rhs->eval().val(); }},
-        {1, RIGHT_TO_LEFT, INFIX, "=",      [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() = rhs->eval().val(); }},
-        {1, RIGHT_TO_LEFT, INFIX, "+=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() += rhs->eval().val(); }},
-        {1, RIGHT_TO_LEFT, INFIX, "-=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() -= rhs->eval().val(); }},
-        {1, RIGHT_TO_LEFT, INFIX, "*=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() *= rhs->eval().val(); }},
-        {1, RIGHT_TO_LEFT, INFIX, "/=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() /= assertNonZero(rhs->line, rhs->eval().val()); }},
-        {1, RIGHT_TO_LEFT, INFIX, "%=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() %= assertNonZero(rhs->line, rhs->eval().val()); }},
-        {1, RIGHT_TO_LEFT, INFIX, "<<=",    [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() <<= assertNonNeg(rhs->line, rhs->eval().val()); }},
-        {1, RIGHT_TO_LEFT, INFIX, ">>=",    [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() >>= assertNonNeg(rhs->line, rhs->eval().val()); }},
-        {1, RIGHT_TO_LEFT, INFIX, "&=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() &= rhs->eval().val(); }},
-        {1, RIGHT_TO_LEFT, INFIX, "^=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() ^= rhs->eval().val(); }},
-        {1, RIGHT_TO_LEFT, INFIX, "|=",     [](ExprNode* lhs, ExprNode* rhs) { return lhs->eval().ref() |= rhs->eval().val(); }},
-        {1, RIGHT_TO_LEFT, PREFIX, "print", [](ScriptEngine* engine, ExprNode* op) { return std::fprintf(engine->out, "%d\n", op->eval().val()) - 1; }},
-        {1, RIGHT_TO_LEFT, PREFIX, "throw", [](ExprNode* op)->Object { throw ScriptException{op->eval().val(), op->line}; }},
-};
+extern const Operator OPERATORS[40];
 
 [[nodiscard]] inline int parseOp(std::string const& token, OperandType operandType) {
     auto first = std::begin(OPERATORS), last = std::end(OPERATORS);
@@ -475,14 +447,15 @@ inline const Operator OPERATORS[] = {
 }
 
 enum class TokenType {
-    PUNCTUATION, OPERATOR, IDENTIFIER, LITERAL, KEYWORD, PAREN, LINEBREAK,
+    PUNCTUATION, OPERATOR, IDENTIFIER, KEYWORD, PAREN, LINEBREAK,
+    LITERAL_BOOL, LITERAL_INT, LITERAL_REAL,
 
     EOT // end of token
 };
 
 struct Token {
     TokenType type;
-    std::variant<int, std::string> parameter;
+    std::variant<int, std::string, int_t, real_t> parameter;
     int line = 0;
     bool operator ==(Token const& other) const {
         return type == other.type && parameter == other.parameter;
@@ -506,15 +479,21 @@ struct Token {
     [[nodiscard]] int parseOp(OperandType operandType) const {
         return SauScript::parseOp(punctuation(), operandType);
     }
-    [[nodiscard]] std::string literal() const {
-        return std::get<std::string>(parameter);
-    }
     [[nodiscard]] int paren() const {
         return std::get<int>(parameter);
     }
     void asOperator(int index) {
         type = TokenType::OPERATOR;
         parameter = index;
+    }
+    [[nodiscard]] int literal_bool() const {
+        return std::get<int>(parameter);
+    }
+    [[nodiscard]] int_t literal_int() const {
+        return std::get<int_t>(parameter);
+    }
+    [[nodiscard]] real_t literal_real() const {
+        return std::get<real_t>(parameter);
     }
     Operator const& operator()() const {
         return OPERATORS[std::get<int>(parameter)];
@@ -525,8 +504,14 @@ struct Token {
     static Token identifier(std::string id) {
         return {TokenType::IDENTIFIER, id};
     }
-    static Token literal(std::string id) {
-        return {TokenType::LITERAL, id};
+    static Token literal_bool(int b) {
+        return {TokenType::LITERAL_BOOL, b};
+    }
+    static Token literal_int(int_t x) {
+        return {TokenType::LITERAL_INT, x};
+    }
+    static Token literal_real(real_t x) {
+        return {TokenType::LITERAL_REAL, x};
     }
     static Token keyword(int keyword) {
         return {TokenType::KEYWORD, keyword};

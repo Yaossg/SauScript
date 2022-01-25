@@ -89,8 +89,10 @@ int normalize(std::vector<Token>& tokens, int i = 0) {
             char const* first = source;
             while (isIdentifierContinue(*++source));
             std::string token{first, source};
-            if (token == "false" || token == "true") {
-                tokens.push_back(Token::literal(token).at(line));
+            if (token == "false") {
+                tokens.push_back(Token::literal_bool(false).at(line));
+            } else if (token == "true") {
+                tokens.push_back(Token::literal_bool(true).at(line));
             } else if (auto kw = Keyword::parse(token); kw != Keyword::NAK) {
                 tokens.push_back(Token::keyword(kw).at(line));
             } else if (std::any_of(std::begin(OPERATORS), std::end(OPERATORS),
@@ -100,9 +102,24 @@ int normalize(std::vector<Token>& tokens, int i = 0) {
                 tokens.push_back(Token::identifier(token).at(line));
             }
         } else if (isNumberStart(ch)) {
-            char const* first = source;
-            while (isNumberContinue(*++source));
-            tokens.push_back(Token::literal({first, source}).at(line));
+            try {
+                size_t idx;
+                auto x = std::stoll(source, &idx, 0);
+                if (source[idx] != '.' && source[idx] != 'e' && source[idx] != 'E') {
+                    tokens.push_back(Token::literal_int(x).at(line));
+                    source += idx;
+                    continue;
+                }
+            } catch (...) {
+
+            }
+            try {
+                size_t idx;
+                tokens.push_back(Token::literal_real(std::stod(source, &idx)).at(line));
+                source += idx;
+            } catch (...) {
+                throw RuntimeError("invalid literal number at line " + toLineString(line));
+            }
         } else {
             std::string token;
             for (auto&& op : OPERATORS) {
@@ -123,7 +140,7 @@ int normalize(std::vector<Token>& tokens, int i = 0) {
     return tokens;
 }
 
-std::optional<Object> ScriptEngine::findObject(const std::string& name) {
+std::optional<Operand> ScriptEngine::findOperand(const std::string& name) {
     for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
         auto&& scope = *it;
         if (scope.contains(name)) return &scope[name];
@@ -140,8 +157,14 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(std::vector<Token> tok
             case TokenType::OPERATOR:
                 operands.push(token.operator()().apply(this, token.line, operands));
                 break;
-            case TokenType::LITERAL:
-                operands.push(std::make_unique<ValNode>(token.line, parseNumber(token.line, token.literal())));
+            case TokenType::LITERAL_BOOL:
+                operands.push(std::make_unique<ValNode>(token.line, Number{token.literal_bool()}));
+                break;
+            case TokenType::LITERAL_INT:
+                operands.push(std::make_unique<ValNode>(token.line, Number{token.literal_int()}));
+                break;
+            case TokenType::LITERAL_REAL:
+                operands.push(std::make_unique<ValNode>(token.line, Number{token.literal_real()}));
                 break;
             case TokenType::IDENTIFIER:
                 operands.push(std::make_unique<RefNode>(this, token.line, token.identifier()));
@@ -350,13 +373,215 @@ void ScriptEngine::exec(const char* script, FILE* err) {
         fprintf(err, "Wild break at line %s\n", toLineString(e.line).c_str());
     } catch (ScriptContinue e) {
         fprintf(err, "Wild continue at line %s\n", toLineString(e.line).c_str());
-    } catch (ScriptException caught) {
-        fprintf(err, "Unhandled script exception caught: %d at line %s\n", caught.thrown, toLineString(caught.line).c_str());
+    } catch (ScriptException& caught) {
+        fprintf(err, caught.what());
     } catch (SyntaxError& e) {
         fprintf(err, "Syntax error: %s\n", e.what());
     } catch (RuntimeError& e) {
         fprintf(err, "Runtime error: %s\n", e.what());
     }
 }
+
+const Operator OPERATORS[40] = {
+        {15, LEFT_TO_RIGHT, POSTFIX, "++",  [](ExprNode* op){
+            return std::visit(overloaded {
+                    [](int_t& a) { return Number{a++}; },
+                    [op](real_t a)-> Number { throw RuntimeError("invalid operand for ++ at line " + toLineString(op->line)); }
+            }, op->eval().ref(op->line)->object);
+        }},
+        {15, LEFT_TO_RIGHT, POSTFIX, "--",  [](ExprNode* op) {
+            return std::visit(overloaded {
+                    [](int_t& a) { return Number{a--}; },
+                    [op](real_t a)-> Number { throw RuntimeError("invalid operand for -- at line " + toLineString(op->line)); }
+            }, op->eval().ref(op->line)->object);
+        }},
+        {14, RIGHT_TO_LEFT, PREFIX, "++",   [](ExprNode* op){
+            auto a = op->eval().ref(op->line);
+            std::visit(overloaded {
+                    [](int_t& a) { ++a; },
+                    [op](real_t a) { throw RuntimeError("invalid operand for ++ at line " + toLineString(op->line)); }
+            }, a->object);
+            return a;
+        }},
+        {14, RIGHT_TO_LEFT, PREFIX, "--",   [](ExprNode* op) {
+            auto a = op->eval().ref(op->line);
+            std::visit(overloaded {
+                    [](int_t& a) { --a; },
+                    [op](real_t a) { throw RuntimeError("invalid operand for -- at line " + toLineString(op->line)); }
+            }, a->object);
+            return a;
+        }},
+        {14, RIGHT_TO_LEFT, PREFIX, "+",    [](ExprNode* op) { return op->eval().val(); }},
+        {14, RIGHT_TO_LEFT, PREFIX, "-",    [](ExprNode* op) { return std::visit([](auto a) { return Number{-a}; }, op->eval().val().object); }},
+        {14, RIGHT_TO_LEFT, PREFIX, "!",    [](ExprNode* op) { return Number{!op->eval().val().asBool(op->line)}; }},
+        {14, RIGHT_TO_LEFT, PREFIX, "~",    [](ExprNode* op) {
+            return std::visit(overloaded {
+                    [](int_t a) { return Number{~a}; },
+                    [](real_t a)-> Number { throw RuntimeError("invalid operand for ~"); }
+            }, op->eval().val().object);
+        }},
+        {14, RIGHT_TO_LEFT, PREFIX, "input",[](ScriptEngine* engine, ExprNode* op) {
+            auto a = op->eval().ref(op->line);
+            return Number{std::visit(overloaded {
+                    [engine](int_t& a) { return fscanf(engine->in, "%lld", &a); },
+                    [engine](real_t& a) { return fscanf(engine->in, "%lf", &a); }
+            }, a->object)};
+        }},
+        {12, LEFT_TO_RIGHT, INFIX, "*",     [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit([](auto lhs, auto rhs) { return Number{lhs * rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {12, LEFT_TO_RIGHT, INFIX, "/",     [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit(overloaded {
+                    [](int_t lhs, int_t rhs) { if (rhs == 0) throw RuntimeError("divided by zero"); return Number{lhs / rhs}; },
+                    [](auto lhs, auto rhs) { return Number{lhs / rhs}; }
+            }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {12, LEFT_TO_RIGHT, INFIX, "%",     [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit(overloaded {
+                    [](int_t lhs, int_t rhs) { if (rhs == 0) throw RuntimeError("divided by zero"); return Number{lhs % rhs}; },
+                    [](auto lhs, auto rhs)-> Number { throw RuntimeError("invalid operand for %"); }
+            }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {11, LEFT_TO_RIGHT, INFIX, "+",     [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit([](auto lhs, auto rhs) { return Number{lhs + rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {11, LEFT_TO_RIGHT, INFIX, "-",     [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit([](auto lhs, auto rhs) { return Number{lhs - rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {10, LEFT_TO_RIGHT, INFIX, "<<",    [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit(overloaded {
+                    [](int_t lhs, int_t rhs) { if (rhs < 0) throw RuntimeError("negative shift count"); return Number{lhs << rhs}; },
+                    [](auto lhs, auto rhs)->Number { throw RuntimeError("invalid operand for <<"); }
+            }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {10, LEFT_TO_RIGHT, INFIX, ">>",    [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit(overloaded {
+                    [](int_t lhs, int_t rhs) { if (rhs < 0) throw RuntimeError("negative shift count"); return Number{lhs >> rhs}; },
+                    [](auto lhs, auto rhs)->Number { throw RuntimeError("invalid operand for >>"); }
+            }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {8, LEFT_TO_RIGHT, INFIX, "<",      [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit([](auto lhs, auto rhs) { return Number{lhs < rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {8, LEFT_TO_RIGHT, INFIX, ">",      [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit([](auto lhs, auto rhs) { return Number{lhs > rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {8, LEFT_TO_RIGHT, INFIX, "<=",     [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit([](auto lhs, auto rhs) { return Number{lhs <= rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {8, LEFT_TO_RIGHT, INFIX, ">=",     [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit([](auto lhs, auto rhs) { return Number{lhs >= rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {7, LEFT_TO_RIGHT, INFIX, "==",     [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit([](auto lhs, auto rhs) { return Number{lhs == rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {7, LEFT_TO_RIGHT, INFIX, "!=",     [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit([](auto lhs, auto rhs) { return Number{lhs != rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {6, LEFT_TO_RIGHT, INFIX, "&",      [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit(overloaded {
+                    [](int_t lhs, int_t rhs) { return Number{lhs & rhs}; },
+                    [](auto lhs, auto rhs)->Number { throw RuntimeError("invalid operand for &"); }
+            }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {5, LEFT_TO_RIGHT, INFIX, "^",      [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit(overloaded {
+                    [](int_t lhs, int_t rhs) { return Number{lhs ^ rhs}; },
+                    [](auto lhs, auto rhs)->Number { throw RuntimeError("invalid operand for ^"); }
+            }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {4, LEFT_TO_RIGHT, INFIX, "|",      [](ExprNode* lhs, ExprNode* rhs) {
+            return std::visit(overloaded {
+                    [](int_t lhs, int_t rhs) { return Number{lhs | rhs}; },
+                    [](auto lhs, auto rhs)->Number { throw RuntimeError("invalid operand for |"); }
+            }, lhs->eval().val().object, rhs->eval().val().object);
+        }},
+        {3, LEFT_TO_RIGHT, INFIX, "&&",     [](ExprNode* lhs, ExprNode* rhs) { return Number{lhs->eval().val().asBool(lhs->line) && rhs->eval().val().asBool(rhs->line)}; }},
+        {2, LEFT_TO_RIGHT, INFIX, "||",     [](ExprNode* lhs, ExprNode* rhs) { return Number{lhs->eval().val().asBool(lhs->line) || rhs->eval().val().asBool(rhs->line)}; }},
+        {1, RIGHT_TO_LEFT, INFIX, "=",      [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit([](auto& lhs, auto rhs) { lhs = rhs; }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, INFIX, "+=",     [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit([](auto& lhs, auto rhs) { lhs += rhs; }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, INFIX, "-=",     [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit([](auto& lhs, auto rhs) { lhs -= rhs; }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, INFIX, "*=",     [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit([](auto& lhs, auto rhs) { lhs *= rhs; }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, INFIX, "/=",     [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit(overloaded {
+                    [](int_t& lhs, int_t rhs) { if (rhs == 0) throw RuntimeError("divided by zero"); lhs /= rhs; },
+                    [](auto& lhs, auto rhs) { lhs /= rhs; }
+            }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, INFIX, "%=",     [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit(overloaded {
+                    [](int_t& lhs, int_t rhs) { if (rhs == 0) throw RuntimeError("divided by zero"); lhs %= rhs; },
+                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for %="); }
+            }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, INFIX, "<<=",    [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit(overloaded {
+                    [](int_t& lhs, int_t rhs) { if (rhs < 0) throw RuntimeError("negative shift count"); lhs <<= rhs; },
+                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for <<="); }
+            }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, INFIX, ">>=",    [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit(overloaded {
+                    [](int_t& lhs, int_t rhs) { if (rhs < 0) throw RuntimeError("negative shift count"); lhs >>= rhs; },
+                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for >>="); }
+            }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, INFIX, "&=",     [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit(overloaded {
+                    [](int_t& lhs, int_t rhs) { lhs &= rhs; },
+                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for &="); }
+            }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, INFIX, "^=",     [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit(overloaded {
+                    [](int_t& lhs, int_t rhs) { lhs ^= rhs; },
+                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for ^="); }
+            }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, INFIX, "|=",     [](ExprNode* lhs, ExprNode* rhs) {
+            auto a = lhs->eval();
+            std::visit(overloaded {
+                    [](int_t& lhs, int_t rhs) { lhs |= rhs; },
+                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for |="); }
+            }, a.ref(lhs->line)->object, rhs->eval().val().object);
+            return a;
+        }},
+        {1, RIGHT_TO_LEFT, PREFIX, "print", [](ScriptEngine* engine, ExprNode* op) {
+            auto a = op->eval().val();
+            return Number{std::visit(overloaded {
+                    [engine](int_t a) { return fprintf(engine->out, "%lld\n", a); },
+                    [engine](real_t a) { return fprintf(engine->out, "%lg\n", a); }
+            }, a.object) - 1};
+        }},
+        {1, RIGHT_TO_LEFT, PREFIX, "throw", [](ExprNode* op)->Operand { throw ScriptException{op->eval().val(), op->line}; }},
+};
 
 }
