@@ -93,6 +93,10 @@ int normalize(std::vector<Token>& tokens, int i = 0) {
                 tokens.push_back(Token::literal_bool(false).at(line));
             } else if (token == "true") {
                 tokens.push_back(Token::literal_bool(true).at(line));
+            } else if (token == "nan") {
+                tokens.push_back(Token::literal_real(0.0 / 0.0).at(line));
+            } else if (token == "inf") {
+                tokens.push_back(Token::literal_real(1.0 / 0.0).at(line));
             } else if (auto kw = Keyword::parse(token); kw != Keyword::NAK) {
                 tokens.push_back(Token::keyword(kw).at(line));
             } else if (std::any_of(std::begin(OPERATORS), std::end(OPERATORS),
@@ -382,204 +386,117 @@ void ScriptEngine::exec(const char* script, FILE* err) {
     }
 }
 
+template<typename Fn>
+auto simpleBinary(Fn&& fn) {
+    return [fn = std::forward<Fn&&>(fn)](ExprNode* lhs, ExprNode* rhs) {
+        return std::visit([fn](auto lhs, auto rhs) { return Number{fn(lhs, rhs)}; }, lhs->eval().val().object, rhs->eval().val().object);
+    };
+}
+
+template<typename Fn>
+auto intBinary(char const* name, Fn&& fn, Assertion* an = noop_assert) {
+    return [name, fn = std::forward<Fn&&>(fn), an](ExprNode* lhs, ExprNode* rhs) {
+        auto a = lhs->eval().val().asIntOp(name, lhs->line);
+        auto b = rhs->eval().val().asIntOp(name, rhs->line);
+        an(b, rhs->line);
+        return Number{fn(a, b)};
+    };
+}
+
+template<typename Fn>
+auto simpleAssignment(Fn&& fn) {
+    return [fn = std::forward<Fn&&>(fn)](ExprNode* lhs, ExprNode* rhs) {
+        auto a = lhs->eval();
+        std::visit(fn, a.ref(lhs->line)->object, rhs->eval().val().object);
+        return a;
+    };
+}
+
+template<typename Fn>
+auto intAssignment(char const* name, Fn&& fn, Assertion* an = noop_assert) {
+    return [name, fn = std::forward<Fn&&>(fn), an](ExprNode* lhs, ExprNode* rhs) {
+        auto a = lhs->eval();
+        int_t& r = a.ref(lhs->line)->asIntOp(name, lhs->line);
+        int_t b = rhs->eval().val().asIntOp(name, lhs->line);
+        an(b, rhs->line);
+        fn(r, b);
+        return a;
+    };
+}
+
 const Operator OPERATORS[40] = {
         {15, LEFT_TO_RIGHT, POSTFIX, "++",  [](ExprNode* op){
-            return std::visit(overloaded {
-                    [](int_t& a) { return Number{a++}; },
-                    [op](real_t a)-> Number { throw RuntimeError("invalid operand for ++ at line " + toLineString(op->line)); }
-            }, op->eval().ref(op->line)->object);
+            return Number{op->eval().ref(op->line)->asIntOp("++", op->line)++};
         }},
         {15, LEFT_TO_RIGHT, POSTFIX, "--",  [](ExprNode* op) {
-            return std::visit(overloaded {
-                    [](int_t& a) { return Number{a--}; },
-                    [op](real_t a)-> Number { throw RuntimeError("invalid operand for -- at line " + toLineString(op->line)); }
-            }, op->eval().ref(op->line)->object);
+            return Number{op->eval().ref(op->line)->asIntOp("--", op->line)--};
         }},
         {14, RIGHT_TO_LEFT, PREFIX, "++",   [](ExprNode* op){
-            auto a = op->eval().ref(op->line);
-            std::visit(overloaded {
-                    [](int_t& a) { ++a; },
-                    [op](real_t a) { throw RuntimeError("invalid operand for ++ at line " + toLineString(op->line)); }
-            }, a->object);
+            auto a = op->eval();
+            ++a.ref(op->line)->asIntOp("++", op->line);
             return a;
         }},
         {14, RIGHT_TO_LEFT, PREFIX, "--",   [](ExprNode* op) {
-            auto a = op->eval().ref(op->line);
-            std::visit(overloaded {
-                    [](int_t& a) { --a; },
-                    [op](real_t a) { throw RuntimeError("invalid operand for -- at line " + toLineString(op->line)); }
-            }, a->object);
+            auto a = op->eval();
+            --a.ref(op->line)->asIntOp("--", op->line);
             return a;
         }},
         {14, RIGHT_TO_LEFT, PREFIX, "+",    [](ExprNode* op) { return op->eval().val(); }},
-        {14, RIGHT_TO_LEFT, PREFIX, "-",    [](ExprNode* op) { return std::visit([](auto a) { return Number{-a}; }, op->eval().val().object); }},
+        {14, RIGHT_TO_LEFT, PREFIX, "-",    [](ExprNode* op) { return op->eval().val().visit([](auto a) { return Number{-a}; }); }},
         {14, RIGHT_TO_LEFT, PREFIX, "!",    [](ExprNode* op) { return Number{!op->eval().val().asBool(op->line)}; }},
-        {14, RIGHT_TO_LEFT, PREFIX, "~",    [](ExprNode* op) {
-            return std::visit(overloaded {
-                    [](int_t a) { return Number{~a}; },
-                    [](real_t a)-> Number { throw RuntimeError("invalid operand for ~"); }
-            }, op->eval().val().object);
-        }},
+        {14, RIGHT_TO_LEFT, PREFIX, "~",    [](ExprNode* op) { return Number{~op->eval().val().asIntOp("~", op->line)}; }},
         {14, RIGHT_TO_LEFT, PREFIX, "input",[](ScriptEngine* engine, ExprNode* op) {
-            auto a = op->eval().ref(op->line);
-            return Number{std::visit(overloaded {
+            return Number{op->eval().ref(op->line)->visit(overloaded {
                     [engine](int_t& a) { return fscanf(engine->in, "%lld", &a); },
                     [engine](real_t& a) { return fscanf(engine->in, "%lf", &a); }
-            }, a->object)};
+            })};
         }},
-        {12, LEFT_TO_RIGHT, INFIX, "*",     [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit([](auto lhs, auto rhs) { return Number{lhs * rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {12, LEFT_TO_RIGHT, INFIX, "/",     [](ExprNode* lhs, ExprNode* rhs) {
+        {12, LEFT_TO_RIGHT, INFIX, "*",  simpleBinary(std::multiplies<void>{})},
+        {12, LEFT_TO_RIGHT, INFIX, "/",  [](ExprNode* lhs, ExprNode* rhs) {
             return std::visit(overloaded {
-                    [](int_t lhs, int_t rhs) { if (rhs == 0) throw RuntimeError("divided by zero"); return Number{lhs / rhs}; },
+                    [line = rhs->line](int_t lhs, int_t rhs) { division_assert(rhs, line); return Number{lhs / rhs}; },
                     [](auto lhs, auto rhs) { return Number{lhs / rhs}; }
             }, lhs->eval().val().object, rhs->eval().val().object);
         }},
-        {12, LEFT_TO_RIGHT, INFIX, "%",     [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit(overloaded {
-                    [](int_t lhs, int_t rhs) { if (rhs == 0) throw RuntimeError("divided by zero"); return Number{lhs % rhs}; },
-                    [](auto lhs, auto rhs)-> Number { throw RuntimeError("invalid operand for %"); }
-            }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {11, LEFT_TO_RIGHT, INFIX, "+",     [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit([](auto lhs, auto rhs) { return Number{lhs + rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {11, LEFT_TO_RIGHT, INFIX, "-",     [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit([](auto lhs, auto rhs) { return Number{lhs - rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {10, LEFT_TO_RIGHT, INFIX, "<<",    [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit(overloaded {
-                    [](int_t lhs, int_t rhs) { if (rhs < 0) throw RuntimeError("negative shift count"); return Number{lhs << rhs}; },
-                    [](auto lhs, auto rhs)->Number { throw RuntimeError("invalid operand for <<"); }
-            }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {10, LEFT_TO_RIGHT, INFIX, ">>",    [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit(overloaded {
-                    [](int_t lhs, int_t rhs) { if (rhs < 0) throw RuntimeError("negative shift count"); return Number{lhs >> rhs}; },
-                    [](auto lhs, auto rhs)->Number { throw RuntimeError("invalid operand for >>"); }
-            }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {8, LEFT_TO_RIGHT, INFIX, "<",      [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit([](auto lhs, auto rhs) { return Number{lhs < rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {8, LEFT_TO_RIGHT, INFIX, ">",      [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit([](auto lhs, auto rhs) { return Number{lhs > rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {8, LEFT_TO_RIGHT, INFIX, "<=",     [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit([](auto lhs, auto rhs) { return Number{lhs <= rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {8, LEFT_TO_RIGHT, INFIX, ">=",     [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit([](auto lhs, auto rhs) { return Number{lhs >= rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {7, LEFT_TO_RIGHT, INFIX, "==",     [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit([](auto lhs, auto rhs) { return Number{lhs == rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {7, LEFT_TO_RIGHT, INFIX, "!=",     [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit([](auto lhs, auto rhs) { return Number{lhs != rhs}; }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {6, LEFT_TO_RIGHT, INFIX, "&",      [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit(overloaded {
-                    [](int_t lhs, int_t rhs) { return Number{lhs & rhs}; },
-                    [](auto lhs, auto rhs)->Number { throw RuntimeError("invalid operand for &"); }
-            }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {5, LEFT_TO_RIGHT, INFIX, "^",      [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit(overloaded {
-                    [](int_t lhs, int_t rhs) { return Number{lhs ^ rhs}; },
-                    [](auto lhs, auto rhs)->Number { throw RuntimeError("invalid operand for ^"); }
-            }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {4, LEFT_TO_RIGHT, INFIX, "|",      [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit(overloaded {
-                    [](int_t lhs, int_t rhs) { return Number{lhs | rhs}; },
-                    [](auto lhs, auto rhs)->Number { throw RuntimeError("invalid operand for |"); }
-            }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {3, LEFT_TO_RIGHT, INFIX, "&&",     [](ExprNode* lhs, ExprNode* rhs) { return Number{lhs->eval().val().asBool(lhs->line) && rhs->eval().val().asBool(rhs->line)}; }},
-        {2, LEFT_TO_RIGHT, INFIX, "||",     [](ExprNode* lhs, ExprNode* rhs) { return Number{lhs->eval().val().asBool(lhs->line) || rhs->eval().val().asBool(rhs->line)}; }},
-        {1, RIGHT_TO_LEFT, INFIX, "=",      [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit([](auto& lhs, auto rhs) { lhs = rhs; }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, "+=",     [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit([](auto& lhs, auto rhs) { lhs += rhs; }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, "-=",     [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit([](auto& lhs, auto rhs) { lhs -= rhs; }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, "*=",     [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit([](auto& lhs, auto rhs) { lhs *= rhs; }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, "/=",     [](ExprNode* lhs, ExprNode* rhs) {
+        {12, LEFT_TO_RIGHT, INFIX, "%",  intBinary("%", std::modulus<int_t>{}, division_assert)},
+        {11, LEFT_TO_RIGHT, INFIX, "+",  simpleBinary(std::plus<void>{})},
+        {11, LEFT_TO_RIGHT, INFIX, "-",  simpleBinary(std::minus<void>{})},
+        {10, LEFT_TO_RIGHT, INFIX, "<<", intBinary("<<", [](int_t a, int_t b) { return a << b; }, shift_assert)},
+        {10, LEFT_TO_RIGHT, INFIX, ">>", intBinary(">>", [](int_t a, int_t b) { return a >> b; }, shift_assert)},
+        {8, LEFT_TO_RIGHT, INFIX, "<",   simpleBinary(std::less<void>{})},
+        {8, LEFT_TO_RIGHT, INFIX, ">",   simpleBinary(std::greater<void>{})},
+        {8, LEFT_TO_RIGHT, INFIX, "<=",  simpleBinary(std::less_equal<void>{})},
+        {8, LEFT_TO_RIGHT, INFIX, ">=",  simpleBinary(std::greater_equal<void>{})},
+        {7, LEFT_TO_RIGHT, INFIX, "==",  simpleBinary(std::equal_to<void>{})},
+        {7, LEFT_TO_RIGHT, INFIX, "!=",  simpleBinary(std::not_equal_to<void>{})},
+        {6, LEFT_TO_RIGHT, INFIX, "&",   intBinary("&", std::bit_and<int_t>{})},
+        {5, LEFT_TO_RIGHT, INFIX, "^",   intBinary("^", std::bit_xor<int_t>{})},
+        {4, LEFT_TO_RIGHT, INFIX, "|",   intBinary("|", std::bit_or<int_t>{})},
+        {3, LEFT_TO_RIGHT, INFIX, "&&",  [](ExprNode* lhs, ExprNode* rhs) { return Number{lhs->eval().val().asBool(lhs->line) && rhs->eval().val().asBool(rhs->line)}; }},
+        {2, LEFT_TO_RIGHT, INFIX, "||",  [](ExprNode* lhs, ExprNode* rhs) { return Number{lhs->eval().val().asBool(lhs->line) || rhs->eval().val().asBool(rhs->line)}; }},
+        {1, RIGHT_TO_LEFT, INFIX, "=",   simpleAssignment([](auto& lhs, auto rhs) { lhs = rhs; })},
+        {1, RIGHT_TO_LEFT, INFIX, "+=",  simpleAssignment([](auto& lhs, auto rhs) { lhs += rhs; })},
+        {1, RIGHT_TO_LEFT, INFIX, "-=",  simpleAssignment([](auto& lhs, auto rhs) { lhs -= rhs; })},
+        {1, RIGHT_TO_LEFT, INFIX, "*=",  simpleAssignment([](auto& lhs, auto rhs) { lhs *= rhs; })},
+        {1, RIGHT_TO_LEFT, INFIX, "/=",  [](ExprNode* lhs, ExprNode* rhs) {
             auto a = lhs->eval();
             std::visit(overloaded {
-                    [](int_t& lhs, int_t rhs) { if (rhs == 0) throw RuntimeError("divided by zero"); lhs /= rhs; },
+                    [line = rhs->line](int_t& lhs, int_t rhs) { division_assert(rhs, line); lhs /= rhs; },
                     [](auto& lhs, auto rhs) { lhs /= rhs; }
             }, a.ref(lhs->line)->object, rhs->eval().val().object);
             return a;
         }},
-        {1, RIGHT_TO_LEFT, INFIX, "%=",     [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit(overloaded {
-                    [](int_t& lhs, int_t rhs) { if (rhs == 0) throw RuntimeError("divided by zero"); lhs %= rhs; },
-                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for %="); }
-            }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, "<<=",    [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit(overloaded {
-                    [](int_t& lhs, int_t rhs) { if (rhs < 0) throw RuntimeError("negative shift count"); lhs <<= rhs; },
-                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for <<="); }
-            }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, ">>=",    [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit(overloaded {
-                    [](int_t& lhs, int_t rhs) { if (rhs < 0) throw RuntimeError("negative shift count"); lhs >>= rhs; },
-                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for >>="); }
-            }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, "&=",     [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit(overloaded {
-                    [](int_t& lhs, int_t rhs) { lhs &= rhs; },
-                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for &="); }
-            }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, "^=",     [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit(overloaded {
-                    [](int_t& lhs, int_t rhs) { lhs ^= rhs; },
-                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for ^="); }
-            }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, "|=",     [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit(overloaded {
-                    [](int_t& lhs, int_t rhs) { lhs |= rhs; },
-                    [](auto& lhs, auto rhs) { throw RuntimeError("invalid operand for |="); }
-            }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
+        {1, RIGHT_TO_LEFT, INFIX, "%=",     intAssignment("%=", [](int_t& lhs, int_t rhs) { lhs %= rhs; }, division_assert)},
+        {1, RIGHT_TO_LEFT, INFIX, "<<=",    intAssignment("<<=", [](int_t& lhs, int_t rhs) { lhs <<= rhs; }, shift_assert)},
+        {1, RIGHT_TO_LEFT, INFIX, ">>=",    intAssignment(">>=", [](int_t& lhs, int_t rhs) { lhs >>= rhs; }, shift_assert)},
+        {1, RIGHT_TO_LEFT, INFIX, "&=",     intAssignment("&=", [](int_t& lhs, int_t rhs) { lhs &= rhs; })},
+        {1, RIGHT_TO_LEFT, INFIX, "^=",     intAssignment("^=", [](int_t& lhs, int_t rhs) { lhs ^= rhs; })},
+        {1, RIGHT_TO_LEFT, INFIX, "|=",     intAssignment("|=", [](int_t& lhs, int_t rhs) { lhs |= rhs; })},
         {1, RIGHT_TO_LEFT, PREFIX, "print", [](ScriptEngine* engine, ExprNode* op) {
-            auto a = op->eval().val();
-            return Number{std::visit(overloaded {
+            return Number{op->eval().val().visit(overloaded {
                     [engine](int_t a) { return fprintf(engine->out, "%lld\n", a); },
                     [engine](real_t a) { return fprintf(engine->out, "%lg\n", a); }
-            }, a.object) - 1};
+            }) - 1};
         }},
         {1, RIGHT_TO_LEFT, PREFIX, "throw", [](ExprNode* op)->Operand { throw ScriptException{op->eval().val(), op->line}; }},
 };

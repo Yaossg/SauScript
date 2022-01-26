@@ -93,6 +93,22 @@ struct Number {
             return std::get<int_t>(object) != 0;
         throw RuntimeError("expected int as bool at line " + toLineString(line));
     }
+
+    int_t& asIntOp(char const* op, int line) {
+        if (std::holds_alternative<int_t>(object))
+            return std::get<int_t>(object);
+        std::string
+            msg  = "expected int operand for ";
+            msg += op;
+            msg += " at line ";
+            msg += toLineString(line);
+        throw RuntimeError(msg);
+    }
+
+    template<typename Fn>
+    auto visit(Fn&& fn) {
+        return std::visit(std::forward<Fn&&>(fn), object);
+    }
 };
 
 struct ScriptException : std::exception {
@@ -529,5 +545,17 @@ struct Token {
         return {TokenType::EOT, 0};
     }
 };
+
+using Assertion = void(int_t, int);
+
+inline void noop_assert(int_t, int) {}
+
+inline void division_assert(int_t b, int line) {
+    if (b == 0) throw RuntimeError("divided by zero at line " + toLineString(line));
+}
+
+inline void shift_assert(int_t b, int line) {
+    if (b < 0) throw RuntimeError("negative shift count at line " + toLineString(line));
+}
 
 }
