@@ -107,7 +107,7 @@ struct Number {
 
     template<typename Fn>
     auto visit(Fn&& fn) {
-        return std::visit(std::forward<Fn&&>(fn), object);
+        return std::visit(std::forward<Fn>(fn), object);
     }
 };
 

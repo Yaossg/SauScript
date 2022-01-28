@@ -387,15 +387,15 @@ void ScriptEngine::exec(const char* script, FILE* err) {
 }
 
 template<typename Fn>
-auto simpleBinary(Fn&& fn) {
-    return [fn = std::forward<Fn&&>(fn)](ExprNode* lhs, ExprNode* rhs) {
+auto simpleBinary(Fn fn) {
+    return [fn](ExprNode* lhs, ExprNode* rhs) {
         return std::visit([fn](auto lhs, auto rhs) { return Number{fn(lhs, rhs)}; }, lhs->eval().val().object, rhs->eval().val().object);
     };
 }
 
 template<typename Fn>
-auto intBinary(char const* name, Fn&& fn, Assertion* an = noop_assert) {
-    return [name, fn = std::forward<Fn&&>(fn), an](ExprNode* lhs, ExprNode* rhs) {
+auto intBinary(char const* name, Fn fn, Assertion* an = noop_assert) {
+    return [name, fn, an](ExprNode* lhs, ExprNode* rhs) {
         auto a = lhs->eval().val().asIntOp(name, lhs->line);
         auto b = rhs->eval().val().asIntOp(name, rhs->line);
         an(b, rhs->line);
@@ -404,8 +404,8 @@ auto intBinary(char const* name, Fn&& fn, Assertion* an = noop_assert) {
 }
 
 template<typename Fn>
-auto simpleAssignment(Fn&& fn) {
-    return [fn = std::forward<Fn&&>(fn)](ExprNode* lhs, ExprNode* rhs) {
+auto simpleAssignment(Fn fn) {
+    return [fn](ExprNode* lhs, ExprNode* rhs) {
         auto a = lhs->eval();
         std::visit(fn, a.ref(lhs->line)->object, rhs->eval().val().object);
         return a;
@@ -413,8 +413,8 @@ auto simpleAssignment(Fn&& fn) {
 }
 
 template<typename Fn>
-auto intAssignment(char const* name, Fn&& fn, Assertion* an = noop_assert) {
-    return [name, fn = std::forward<Fn&&>(fn), an](ExprNode* lhs, ExprNode* rhs) {
+auto intAssignment(char const* name, Fn fn, Assertion* an = noop_assert) {
+    return [name, fn, an](ExprNode* lhs, ExprNode* rhs) {
         auto a = lhs->eval();
         int_t& r = a.ref(lhs->line)->asIntOp(name, lhs->line);
         int_t b = rhs->eval().val().asIntOp(name, lhs->line);
@@ -451,7 +451,7 @@ const Operator OPERATORS[40] = {
                     [engine](real_t& a) { return fscanf(engine->in, "%lf", &a); }
             })};
         }},
-        {12, LEFT_TO_RIGHT, INFIX, "*",  simpleBinary(std::multiplies<void>{})},
+        {12, LEFT_TO_RIGHT, INFIX, "*",  simpleBinary(std::multiplies<>{})},
         {12, LEFT_TO_RIGHT, INFIX, "/",  [](ExprNode* lhs, ExprNode* rhs) {
             return std::visit(overloaded {
                     [line = rhs->line](int_t lhs, int_t rhs) { division_assert(rhs, line); return Number{lhs / rhs}; },
@@ -459,21 +459,25 @@ const Operator OPERATORS[40] = {
             }, lhs->eval().val().object, rhs->eval().val().object);
         }},
         {12, LEFT_TO_RIGHT, INFIX, "%",  intBinary("%", std::modulus<int_t>{}, division_assert)},
-        {11, LEFT_TO_RIGHT, INFIX, "+",  simpleBinary(std::plus<void>{})},
-        {11, LEFT_TO_RIGHT, INFIX, "-",  simpleBinary(std::minus<void>{})},
+        {11, LEFT_TO_RIGHT, INFIX, "+",  simpleBinary(std::plus<>{})},
+        {11, LEFT_TO_RIGHT, INFIX, "-",  simpleBinary(std::minus<>{})},
         {10, LEFT_TO_RIGHT, INFIX, "<<", intBinary("<<", [](int_t a, int_t b) { return a << b; }, shift_assert)},
         {10, LEFT_TO_RIGHT, INFIX, ">>", intBinary(">>", [](int_t a, int_t b) { return a >> b; }, shift_assert)},
-        {8, LEFT_TO_RIGHT, INFIX, "<",   simpleBinary(std::less<void>{})},
-        {8, LEFT_TO_RIGHT, INFIX, ">",   simpleBinary(std::greater<void>{})},
-        {8, LEFT_TO_RIGHT, INFIX, "<=",  simpleBinary(std::less_equal<void>{})},
-        {8, LEFT_TO_RIGHT, INFIX, ">=",  simpleBinary(std::greater_equal<void>{})},
-        {7, LEFT_TO_RIGHT, INFIX, "==",  simpleBinary(std::equal_to<void>{})},
-        {7, LEFT_TO_RIGHT, INFIX, "!=",  simpleBinary(std::not_equal_to<void>{})},
+        {8, LEFT_TO_RIGHT, INFIX, "<",   simpleBinary(std::less<>{})},
+        {8, LEFT_TO_RIGHT, INFIX, ">",   simpleBinary(std::greater<>{})},
+        {8, LEFT_TO_RIGHT, INFIX, "<=",  simpleBinary(std::less_equal<>{})},
+        {8, LEFT_TO_RIGHT, INFIX, ">=",  simpleBinary(std::greater_equal<>{})},
+        {7, LEFT_TO_RIGHT, INFIX, "==",  simpleBinary(std::equal_to<>{})},
+        {7, LEFT_TO_RIGHT, INFIX, "!=",  simpleBinary(std::not_equal_to<>{})},
         {6, LEFT_TO_RIGHT, INFIX, "&",   intBinary("&", std::bit_and<int_t>{})},
         {5, LEFT_TO_RIGHT, INFIX, "^",   intBinary("^", std::bit_xor<int_t>{})},
         {4, LEFT_TO_RIGHT, INFIX, "|",   intBinary("|", std::bit_or<int_t>{})},
-        {3, LEFT_TO_RIGHT, INFIX, "&&",  [](ExprNode* lhs, ExprNode* rhs) { return Number{lhs->eval().val().asBool(lhs->line) && rhs->eval().val().asBool(rhs->line)}; }},
-        {2, LEFT_TO_RIGHT, INFIX, "||",  [](ExprNode* lhs, ExprNode* rhs) { return Number{lhs->eval().val().asBool(lhs->line) || rhs->eval().val().asBool(rhs->line)}; }},
+        {3, LEFT_TO_RIGHT, INFIX, "&&",  [](ExprNode* lhs, ExprNode* rhs) {
+            return Number{lhs->eval().val().asBool(lhs->line) && rhs->eval().val().asBool(rhs->line)};
+        }},
+        {2, LEFT_TO_RIGHT, INFIX, "||",  [](ExprNode* lhs, ExprNode* rhs) {
+            return Number{lhs->eval().val().asBool(lhs->line) || rhs->eval().val().asBool(rhs->line)};
+        }},
         {1, RIGHT_TO_LEFT, INFIX, "=",   simpleAssignment([](auto& lhs, auto rhs) { lhs = rhs; })},
         {1, RIGHT_TO_LEFT, INFIX, "+=",  simpleAssignment([](auto& lhs, auto rhs) { lhs += rhs; })},
         {1, RIGHT_TO_LEFT, INFIX, "-=",  simpleAssignment([](auto& lhs, auto rhs) { lhs -= rhs; })},
