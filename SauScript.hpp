@@ -123,7 +123,6 @@ struct ScriptException : std::exception {
     }
 };
 
-
 struct Operand {
     std::variant<Number, Number*> val_or_ref;
     Operand(Operand const&) = default;
@@ -165,6 +164,8 @@ struct ScriptEngine {
     ScriptEngine(FILE* out = stdout, FILE* in = stdin): out(out), in(in) {}
 
     std::optional<Operand> findOperand(std::string const& name);
+
+    [[nodiscard]] std::unique_ptr<ExprNode> compileExpression(Token*& current, int level);
     [[nodiscard]] std::unique_ptr<ExprNode> compileExpression(std::vector<Token> tokens);
     [[nodiscard]] std::unique_ptr<StmtNode> compileStatement(std::vector<Token> tokens);
     [[nodiscard]] std::unique_ptr<StmtNode> compileWhile(Token*& current);
@@ -420,50 +421,76 @@ enum Associativity: bool {
     LEFT_TO_RIGHT, RIGHT_TO_LEFT
 };
 
-enum OperandType: int {
+enum class OperandType: int {
     INFIX, PREFIX, POSTFIX,
 };
 
-struct Operator {
-    int precedence;
+struct Operator;
+
+struct OperatorLevel {
     Associativity associativity;
     OperandType operandType;
-    std::string_view literal;
+};
+
+inline const OperatorLevel OP_LEVELS[14] = {
+        {RIGHT_TO_LEFT, OperandType::PREFIX}, // throw
+        {RIGHT_TO_LEFT, OperandType::INFIX}, // assignment
+        {LEFT_TO_RIGHT, OperandType::INFIX}, // logic or
+        {LEFT_TO_RIGHT, OperandType::INFIX}, // logic and
+        {LEFT_TO_RIGHT, OperandType::INFIX}, // bit or
+        {LEFT_TO_RIGHT, OperandType::INFIX}, // bit xor
+        {LEFT_TO_RIGHT, OperandType::INFIX}, // bit and
+        {LEFT_TO_RIGHT, OperandType::INFIX}, // equality
+        {LEFT_TO_RIGHT, OperandType::INFIX}, // inequality
+        {LEFT_TO_RIGHT, OperandType::INFIX}, // shift
+        {LEFT_TO_RIGHT, OperandType::INFIX}, // addition
+        {LEFT_TO_RIGHT, OperandType::INFIX}, // multiplication
+        {RIGHT_TO_LEFT, OperandType::PREFIX}, // unary prefix
+        {LEFT_TO_RIGHT, OperandType::POSTFIX}, // unary postfix
+};
+
+struct Operator {
     using Unary = OpUnaryNode::Fn;
     using EUnary = std::function<Operand(ScriptEngine*, ExprNode*)>;
     using Binary = OpBinaryNode::Fn;
     using EBinary = std::function<Operand(ScriptEngine*, ExprNode*, ExprNode*)>;
     using Fn = std::variant<Unary, EUnary, Binary, EBinary>;
+
+    std::string_view literal;
     Fn fn;
-    [[nodiscard]] std::unique_ptr<ExprNode> apply(ScriptEngine* engine, int line, std::stack<std::unique_ptr<ExprNode>>& operands) const {
-        auto pop = [line, &operands] {
-            if (operands.empty()) throw SyntaxError("operand expected at line " + toLineString(line));
-            std::unique_ptr<ExprNode> operand = std::move(operands.top());
-            operands.pop();
-            return operand;
-        };
-        if (operandType == INFIX) {
-            std::unique_ptr<ExprNode> rhs = pop();
-            std::unique_ptr<ExprNode> lhs = pop();
-            Binary binary = std::holds_alternative<EBinary>(fn) ? std::bind_front(std::get<EBinary>(fn), engine) : std::get<Binary>(fn);
-            return std::make_unique<OpBinaryNode>(line, std::move(lhs), std::move(rhs), binary);
-        }
-        std::unique_ptr<ExprNode> operand = pop();
-        Unary unary = std::holds_alternative<EUnary>(fn) ? std::bind_front(std::get<EUnary>(fn), engine) : std::get<Unary>(fn);
-        return std::make_unique<OpUnaryNode>(line, std::move(operand), unary);
+
+    Unary asUnary(ScriptEngine* engine) const {
+        return std::holds_alternative<EUnary>(fn) ? std::bind_front(std::get<EUnary>(fn), engine) : std::get<Unary>(fn);
+    }
+
+    Binary asBinary(ScriptEngine* engine) const {
+        return std::holds_alternative<EBinary>(fn) ? std::bind_front(std::get<EBinary>(fn), engine) : std::get<Binary>(fn);
     }
 };
 
-extern const Operator OPERATORS[40];
+extern const std::vector<Operator> OPERATORS[14];
 
-[[nodiscard]] inline int parseOp(std::string const& token, OperandType operandType) {
-    auto first = std::begin(OPERATORS), last = std::end(OPERATORS);
-    auto result = std::find_if(first, last, [&] (Operator const& op) { return op.literal == token && op.operandType == operandType; });
-    return result != last ? result - first : -1;
+inline Operator const* findOperator(std::string const& literal, int level) {
+    auto first = OPERATORS[level].begin(), last = OPERATORS[level].end();
+    auto result = std::find_if(first, last, [&literal](Operator const& op) { return op.literal == literal; });
+    return result != last ? &*result : nullptr;
+}
+
+static std::vector<std::string_view> OP_TOKENS;
+
+inline std::vector<std::string_view> const& opTokens() {
+    if (OP_TOKENS.empty()) {
+        for (auto&& ops : OPERATORS) {
+            for (auto&& op : ops) {
+                OP_TOKENS.push_back(op.literal);
+            }
+        }
+    }
+    return OP_TOKENS;
 }
 
 enum class TokenType {
-    PUNCTUATION, OPERATOR, IDENTIFIER, KEYWORD, PAREN, LINEBREAK,
+    PUNCTUATION, IDENTIFIER, KEYWORD, PAREN, LINEBREAK,
     LITERAL_BOOL, LITERAL_INT, LITERAL_REAL,
 
     EOT // end of token
@@ -476,8 +503,8 @@ struct Token {
     bool operator ==(Token const& other) const {
         return type == other.type && parameter == other.parameter;
     }
-    Token& at(int line) {
-        this->line = line;
+    Token& at(int where) {
+        line = where;
         return *this;
     }
     [[nodiscard]] std::string at() const {
@@ -492,17 +519,7 @@ struct Token {
     [[nodiscard]] std::string punctuation() const {
         return std::get<std::string>(parameter);
     }
-    [[nodiscard]] int parseOp(OperandType operandType) const {
-        return SauScript::parseOp(punctuation(), operandType);
-    }
-    [[nodiscard]] int paren() const {
-        return std::get<int>(parameter);
-    }
-    void asOperator(int index) {
-        type = TokenType::OPERATOR;
-        parameter = index;
-    }
-    [[nodiscard]] int literal_bool() const {
+    [[nodiscard]] bool literal_bool() const {
         return std::get<int>(parameter);
     }
     [[nodiscard]] int_t literal_int() const {
@@ -511,17 +528,14 @@ struct Token {
     [[nodiscard]] real_t literal_real() const {
         return std::get<real_t>(parameter);
     }
-    Operator const& operator()() const {
-        return OPERATORS[std::get<int>(parameter)];
-    }
     static Token punctuation(std::string p) {
         return {TokenType::PUNCTUATION, p};
     }
     static Token identifier(std::string id) {
         return {TokenType::IDENTIFIER, id};
     }
-    static Token literal_bool(int b) {
-        return {TokenType::LITERAL_BOOL, b};
+    static Token literal_bool(bool x) {
+        return {TokenType::LITERAL_BOOL, x};
     }
     static Token literal_int(int_t x) {
         return {TokenType::LITERAL_INT, x};

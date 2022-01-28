@@ -2,76 +2,10 @@
 
 namespace SauScript {
 
-int normalize(std::vector<Token>& tokens, int i = 0) {
-    for (; i < tokens.size() && tokens[i].type == TokenType::PUNCTUATION; ++i) {
-        int op = tokens[i].parseOp(PREFIX);
-        if (op < 0) break;
-        tokens[i].asOperator(op);
-    }
-    for (; i < tokens.size(); ++i) {
-        if (tokens[i] == Token::parenLeft()) {
-            ++i;
-            i = normalize(tokens, i);
-        } else if (tokens[i] == Token::parenRight()) {
-            return i;
-        } else if (tokens[i].type == TokenType::PUNCTUATION) {
-            int op = tokens[i].parseOp(INFIX);
-            if (op < 0) {
-                tokens[i].asOperator(tokens[i].parseOp(POSTFIX));
-            } else {
-                tokens[i].asOperator(op);
-                if (tokens[i + 1] != Token::parenLeft())
-                    i = normalize(tokens, i + 1);
-            }
-        }
-    }
-    return i;
-}
-
-[[nodiscard]] auto transfix(std::vector<Token> const& infix) {
-    std::stack<Token> ops;
-    std::vector<Token> postfix;
-    for (auto&& token : infix) {
-        switch (token.type) {
-            case TokenType::OPERATOR: {
-                auto&& op = token.operator()();
-                while (!ops.empty() && ops.top().type != TokenType::PAREN) {
-                    auto&& top = ops.top().operator()();
-                    if (op.operandType == PREFIX) break;
-                    if (op.precedence > top.precedence) break;
-                    if (op.precedence == top.precedence && op.associativity) break;
-                    postfix.push_back(ops.top());
-                    ops.pop();
-                }
-                ops.push(token);
-            } break;
-            case TokenType::PAREN:
-                if (token.paren()) {
-                    while (!ops.empty() && ops.top().type != TokenType::PAREN) {
-                        postfix.push_back(ops.top());
-                        ops.pop();
-                    }
-                    if (ops.empty()) throw SyntaxError("missing '(' to match ')' at line " + token.at());
-                    ops.pop(); // "("
-                } else {
-                    ops.push(token);
-                }
-                break;
-            default:
-                postfix.push_back(token);
-        }
-    }
-    while (!ops.empty()) {
-        postfix.push_back(ops.top());
-        ops.pop();
-    }
-    return postfix;
-}
-
 [[nodiscard]] auto tokenize(char const* source) {
     std::vector<Token> tokens;
     int line = 1;
-    while (char ch = *source) {
+    while (char const ch = *source) {
         if (ch == '\\') {
             if (skipLineBreak(++source, true, line)) continue;
             throw SyntaxError("stray '\\' at line " + toLineString(line));
@@ -99,8 +33,7 @@ int normalize(std::vector<Token>& tokens, int i = 0) {
                 tokens.push_back(Token::literal_real(1.0 / 0.0).at(line));
             } else if (auto kw = Keyword::parse(token); kw != Keyword::NAK) {
                 tokens.push_back(Token::keyword(kw).at(line));
-            } else if (std::any_of(std::begin(OPERATORS), std::end(OPERATORS),
-                                   [&token] (Operator const& op) { return op.literal == token; })) {
+            } else if (auto&& ops = opTokens(); std::find(ops.begin(), ops.end(), token) != ops.end()) {
                 tokens.push_back(Token::punctuation(token).at(line));
             } else {
                 tokens.push_back(Token::identifier(token).at(line));
@@ -114,9 +47,7 @@ int normalize(std::vector<Token>& tokens, int i = 0) {
                     source += idx;
                     continue;
                 }
-            } catch (...) {
-
-            }
+            } catch (...) {}
             try {
                 size_t idx;
                 tokens.push_back(Token::literal_real(std::stod(source, &idx)).at(line));
@@ -126,9 +57,9 @@ int normalize(std::vector<Token>& tokens, int i = 0) {
             }
         } else {
             std::string token;
-            for (auto&& op : OPERATORS) {
-                if (std::string_view{source}.starts_with(op.literal)) {
-                    if (op.literal.length() > token.length()) token = op.literal;
+            for (auto&& op : opTokens()) {
+                if (std::string_view{source}.starts_with(op)) {
+                    if (op.length() > token.length()) token = op;
                 }
             }
             if (!token.empty()) {
@@ -152,33 +83,68 @@ std::optional<Operand> ScriptEngine::findOperand(const std::string& name) {
     return std::nullopt;
 }
 
-std::unique_ptr<ExprNode> ScriptEngine::compileExpression(std::vector<Token> tokens) {
-    normalize(tokens);
-    std::stack<std::unique_ptr<ExprNode>> operands;
-    for (auto&& token : transfix(tokens)) {
+std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level) {
+    if (level > 13) {
+        auto token = *current++;
         switch (token.type) {
-            case TokenType::LINEBREAK: continue;
-            case TokenType::OPERATOR:
-                operands.push(token.operator()().apply(this, token.line, operands));
-                break;
             case TokenType::LITERAL_BOOL:
-                operands.push(std::make_unique<ValNode>(token.line, Number{token.literal_bool()}));
-                break;
+                return std::make_unique<ValNode>(token.line, Number{token.literal_bool()});
             case TokenType::LITERAL_INT:
-                operands.push(std::make_unique<ValNode>(token.line, Number{token.literal_int()}));
-                break;
+                return std::make_unique<ValNode>(token.line, Number{token.literal_int()});
             case TokenType::LITERAL_REAL:
-                operands.push(std::make_unique<ValNode>(token.line, Number{token.literal_real()}));
-                break;
+                return std::make_unique<ValNode>(token.line, Number{token.literal_real()});
             case TokenType::IDENTIFIER:
-                operands.push(std::make_unique<RefNode>(this, token.line, token.identifier()));
-                break;
-            default:
-                throw SyntaxError("invalid token to compile at line " + token.at());
+                return std::make_unique<RefNode>(this, token.line, token.identifier());
+        }
+        if (token == Token::parenLeft()) {
+            auto expr = compileExpression(current, 0);
+            if (*current++ != Token::parenRight()) throw SyntaxError("missing ')' to match '(' at line " + toLineString(current->line));
+            return expr;
+        }
+        throw SyntaxError("invalid leaf node token for expression at line " + toLineString(current->line));
+    }
+    switch (Operator const* op; OP_LEVELS[level].operandType) {
+        case OperandType::PREFIX: {
+            if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
+                int line = current++->line;
+                return std::make_unique<OpUnaryNode>(line, compileExpression(current, level), op->asUnary(this));
+            }
+            return compileExpression(current, level + 1);
+        }
+        case OperandType::POSTFIX: {
+            auto expr = compileExpression(current, level + 1);
+            if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
+                int line = current++->line;
+                return std::make_unique<OpUnaryNode>(line, std::move(expr), op->asUnary(this));
+            }
+            return expr;
+        }
+        case OperandType::INFIX: {
+            if (OP_LEVELS[level].associativity) {
+                auto expr = compileExpression(current, level + 1);
+                if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
+                    int line = current++->line;
+                    return std::make_unique<OpBinaryNode>(line, std::move(expr), compileExpression(current, level), op->asBinary(this));
+                }
+                return expr;
+            } else {
+                auto expr = compileExpression(current, level + 1);
+                while (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
+                    int line = current++->line;
+                    expr = std::make_unique<OpBinaryNode>(line, std::move(expr), compileExpression(current, level + 1), op->asBinary(this));
+                }
+                return expr;
+            }
         }
     }
-    if (operands.empty()) throw SyntaxError("empty expression at line " + tokens.back().at());
-    return std::move(operands.top());
+    throw SyntaxError("Assertion failed");
+}
+
+std::unique_ptr<ExprNode> ScriptEngine::compileExpression(std::vector<Token> tokens) {
+    if (tokens.empty()) throw RuntimeError("unexpected empty expression");
+    tokens.push_back(Token::eot());
+    Token* current = tokens.data();
+    return compileExpression(current, 0);
 }
 
 std::unique_ptr<StmtNode> ScriptEngine::compileStatement(std::vector<Token> tokens) {
@@ -424,85 +390,105 @@ auto intAssignment(char const* name, Fn fn, Assertion* an = noop_assert) {
     };
 }
 
-const Operator OPERATORS[40] = {
-        {15, LEFT_TO_RIGHT, POSTFIX, "++",  [](ExprNode* op){
-            return Number{op->eval().ref(op->line)->asIntOp("++", op->line)++};
-        }},
-        {15, LEFT_TO_RIGHT, POSTFIX, "--",  [](ExprNode* op) {
-            return Number{op->eval().ref(op->line)->asIntOp("--", op->line)--};
-        }},
-        {14, RIGHT_TO_LEFT, PREFIX, "++",   [](ExprNode* op){
-            auto a = op->eval();
-            ++a.ref(op->line)->asIntOp("++", op->line);
-            return a;
-        }},
-        {14, RIGHT_TO_LEFT, PREFIX, "--",   [](ExprNode* op) {
-            auto a = op->eval();
-            --a.ref(op->line)->asIntOp("--", op->line);
-            return a;
-        }},
-        {14, RIGHT_TO_LEFT, PREFIX, "+",    [](ExprNode* op) { return op->eval().val(); }},
-        {14, RIGHT_TO_LEFT, PREFIX, "-",    [](ExprNode* op) { return op->eval().val().visit([](auto a) { return Number{-a}; }); }},
-        {14, RIGHT_TO_LEFT, PREFIX, "!",    [](ExprNode* op) { return Number{!op->eval().val().asBool(op->line)}; }},
-        {14, RIGHT_TO_LEFT, PREFIX, "~",    [](ExprNode* op) { return Number{~op->eval().val().asIntOp("~", op->line)}; }},
-        {14, RIGHT_TO_LEFT, PREFIX, "input",[](ScriptEngine* engine, ExprNode* op) {
-            return Number{op->eval().ref(op->line)->visit(overloaded {
-                    [engine](int_t& a) { return fscanf(engine->in, "%lld", &a); },
-                    [engine](real_t& a) { return fscanf(engine->in, "%lf", &a); }
-            })};
-        }},
-        {12, LEFT_TO_RIGHT, INFIX, "*",  simpleBinary(std::multiplies<>{})},
-        {12, LEFT_TO_RIGHT, INFIX, "/",  [](ExprNode* lhs, ExprNode* rhs) {
-            return std::visit(overloaded {
-                    [line = rhs->line](int_t lhs, int_t rhs) { division_assert(rhs, line); return Number{lhs / rhs}; },
-                    [](auto lhs, auto rhs) { return Number{lhs / rhs}; }
-            }, lhs->eval().val().object, rhs->eval().val().object);
-        }},
-        {12, LEFT_TO_RIGHT, INFIX, "%",  intBinary("%", std::modulus<int_t>{}, division_assert)},
-        {11, LEFT_TO_RIGHT, INFIX, "+",  simpleBinary(std::plus<>{})},
-        {11, LEFT_TO_RIGHT, INFIX, "-",  simpleBinary(std::minus<>{})},
-        {10, LEFT_TO_RIGHT, INFIX, "<<", intBinary("<<", [](int_t a, int_t b) { return a << b; }, shift_assert)},
-        {10, LEFT_TO_RIGHT, INFIX, ">>", intBinary(">>", [](int_t a, int_t b) { return a >> b; }, shift_assert)},
-        {8, LEFT_TO_RIGHT, INFIX, "<",   simpleBinary(std::less<>{})},
-        {8, LEFT_TO_RIGHT, INFIX, ">",   simpleBinary(std::greater<>{})},
-        {8, LEFT_TO_RIGHT, INFIX, "<=",  simpleBinary(std::less_equal<>{})},
-        {8, LEFT_TO_RIGHT, INFIX, ">=",  simpleBinary(std::greater_equal<>{})},
-        {7, LEFT_TO_RIGHT, INFIX, "==",  simpleBinary(std::equal_to<>{})},
-        {7, LEFT_TO_RIGHT, INFIX, "!=",  simpleBinary(std::not_equal_to<>{})},
-        {6, LEFT_TO_RIGHT, INFIX, "&",   intBinary("&", std::bit_and<int_t>{})},
-        {5, LEFT_TO_RIGHT, INFIX, "^",   intBinary("^", std::bit_xor<int_t>{})},
-        {4, LEFT_TO_RIGHT, INFIX, "|",   intBinary("|", std::bit_or<int_t>{})},
-        {3, LEFT_TO_RIGHT, INFIX, "&&",  [](ExprNode* lhs, ExprNode* rhs) {
-            return Number{lhs->eval().val().asBool(lhs->line) && rhs->eval().val().asBool(rhs->line)};
-        }},
-        {2, LEFT_TO_RIGHT, INFIX, "||",  [](ExprNode* lhs, ExprNode* rhs) {
+const std::vector<Operator> OPERATORS[14] = {
+        {
+            {"print", [](ScriptEngine* engine, ExprNode* op) {
+                return Number{op->eval().val().visit(overloaded {
+                        [engine](int_t a) { return fprintf(engine->out, "%lld\n", a); },
+                        [engine](real_t a) { return fprintf(engine->out, "%lg\n", a); }
+                }) - 1};
+            }},
+            {"throw", [](ExprNode* op)->Operand { throw ScriptException{op->eval().val(), op->line}; }}
+        },
+        {
+            {"=",  simpleAssignment([](auto& lhs, auto rhs) { lhs = rhs; })},
+            {"+=", simpleAssignment([](auto& lhs, auto rhs) { lhs += rhs; })},
+            {"-=", simpleAssignment([](auto& lhs, auto rhs) { lhs -= rhs; })},
+            {"*=", simpleAssignment([](auto& lhs, auto rhs) { lhs *= rhs; })},
+            {"/=", [](ExprNode* lhs, ExprNode* rhs) {
+                auto a = lhs->eval();
+                std::visit(overloaded {
+                        [line = rhs->line](int_t& lhs, int_t rhs) { division_assert(rhs, line); lhs /= rhs; },
+                        [](auto& lhs, auto rhs) { lhs /= rhs; }
+                }, a.ref(lhs->line)->object, rhs->eval().val().object);
+                return a;
+            }},
+            {"%=", intAssignment("%=", [](int_t& lhs, int_t rhs) { lhs %= rhs; }, division_assert)},
+            {"<<=",intAssignment("<<=", [](int_t& lhs, int_t rhs) { lhs <<= rhs; }, shift_assert)},
+            {">>=",intAssignment(">>=", [](int_t& lhs, int_t rhs) { lhs >>= rhs; }, shift_assert)},
+            {"&=", intAssignment("&=", [](int_t& lhs, int_t rhs) { lhs &= rhs; })},
+            {"^=", intAssignment("^=", [](int_t& lhs, int_t rhs) { lhs ^= rhs; })},
+            {"|=", intAssignment("|=", [](int_t& lhs, int_t rhs) { lhs |= rhs; })}
+        },
+        {{"||", [](ExprNode *lhs, ExprNode *rhs) {
             return Number{lhs->eval().val().asBool(lhs->line) || rhs->eval().val().asBool(rhs->line)};
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, "=",   simpleAssignment([](auto& lhs, auto rhs) { lhs = rhs; })},
-        {1, RIGHT_TO_LEFT, INFIX, "+=",  simpleAssignment([](auto& lhs, auto rhs) { lhs += rhs; })},
-        {1, RIGHT_TO_LEFT, INFIX, "-=",  simpleAssignment([](auto& lhs, auto rhs) { lhs -= rhs; })},
-        {1, RIGHT_TO_LEFT, INFIX, "*=",  simpleAssignment([](auto& lhs, auto rhs) { lhs *= rhs; })},
-        {1, RIGHT_TO_LEFT, INFIX, "/=",  [](ExprNode* lhs, ExprNode* rhs) {
-            auto a = lhs->eval();
-            std::visit(overloaded {
-                    [line = rhs->line](int_t& lhs, int_t rhs) { division_assert(rhs, line); lhs /= rhs; },
-                    [](auto& lhs, auto rhs) { lhs /= rhs; }
-            }, a.ref(lhs->line)->object, rhs->eval().val().object);
-            return a;
-        }},
-        {1, RIGHT_TO_LEFT, INFIX, "%=",     intAssignment("%=", [](int_t& lhs, int_t rhs) { lhs %= rhs; }, division_assert)},
-        {1, RIGHT_TO_LEFT, INFIX, "<<=",    intAssignment("<<=", [](int_t& lhs, int_t rhs) { lhs <<= rhs; }, shift_assert)},
-        {1, RIGHT_TO_LEFT, INFIX, ">>=",    intAssignment(">>=", [](int_t& lhs, int_t rhs) { lhs >>= rhs; }, shift_assert)},
-        {1, RIGHT_TO_LEFT, INFIX, "&=",     intAssignment("&=", [](int_t& lhs, int_t rhs) { lhs &= rhs; })},
-        {1, RIGHT_TO_LEFT, INFIX, "^=",     intAssignment("^=", [](int_t& lhs, int_t rhs) { lhs ^= rhs; })},
-        {1, RIGHT_TO_LEFT, INFIX, "|=",     intAssignment("|=", [](int_t& lhs, int_t rhs) { lhs |= rhs; })},
-        {1, RIGHT_TO_LEFT, PREFIX, "print", [](ScriptEngine* engine, ExprNode* op) {
-            return Number{op->eval().val().visit(overloaded {
-                    [engine](int_t a) { return fprintf(engine->out, "%lld\n", a); },
-                    [engine](real_t a) { return fprintf(engine->out, "%lg\n", a); }
-            }) - 1};
-        }},
-        {1, RIGHT_TO_LEFT, PREFIX, "throw", [](ExprNode* op)->Operand { throw ScriptException{op->eval().val(), op->line}; }},
+        }}},
+        {{"&&", [](ExprNode *lhs, ExprNode *rhs) {
+            return Number{lhs->eval().val().asBool(lhs->line) && rhs->eval().val().asBool(rhs->line)};
+        }}},
+        {{"|", intBinary("|", std::bit_or<int_t>{})}},
+        {{"^", intBinary("^", std::bit_xor<int_t>{})}},
+        {{"&", intBinary("&", std::bit_and<int_t>{})}},
+        {
+            {"==", simpleBinary(std::equal_to<>{})},
+            {"!=", simpleBinary(std::not_equal_to<>{})}
+        },
+        {
+            {"<",  simpleBinary(std::less<>{})},
+            {">",  simpleBinary(std::greater<>{})},
+            {"<=", simpleBinary(std::less_equal<>{})},
+            {">=", simpleBinary(std::greater_equal<>{})}
+        },
+        {
+            {"<<", intBinary("<<", [](int_t a, int_t b) { return a << b; }, shift_assert)},
+            {">>", intBinary(">>", [](int_t a, int_t b) { return a >> b; }, shift_assert)}
+        },
+        {
+            {"+", simpleBinary(std::plus<>{})},
+            {"-", simpleBinary(std::minus<>{})}
+        },
+        {
+            {"*", simpleBinary(std::multiplies<>{})},
+            {"/", [](ExprNode* lhs, ExprNode* rhs) {
+                return std::visit(overloaded {
+                        [line = rhs->line](int_t lhs, int_t rhs) { division_assert(rhs, line); return Number{lhs / rhs}; },
+                        [](auto lhs, auto rhs) { return Number{lhs / rhs}; }
+                }, lhs->eval().val().object, rhs->eval().val().object);
+            }},
+            {"%", intBinary("%", std::modulus<int_t>{}, division_assert)}
+        },
+        {
+            {"++", [](ExprNode* op) {
+                auto a = op->eval();
+                ++a.ref(op->line)->asIntOp("++", op->line);
+                return a;
+            }},
+            {"--", [](ExprNode *op) {
+                auto a = op->eval();
+                --a.ref(op->line)->asIntOp("--", op->line);
+                return a;
+            }},
+            {"+", [](ExprNode *op) { return op->eval().val(); }},
+            {"-", [](ExprNode *op) {
+                return op->eval().val().visit([](auto a) { return Number{-a}; });
+            }},
+            {"!", [](ExprNode *op) { return Number{!op->eval().val().asBool(op->line)}; }},
+            {"~", [](ExprNode *op) { return Number{~op->eval().val().asIntOp("~", op->line)}; }},
+            {"input", [](ScriptEngine *engine, ExprNode *op) {
+                return Number{op->eval().ref(op->line)->visit(overloaded{
+                        [engine](int_t &a) { return fscanf(engine->in, "%lld", &a); },
+                        [engine](real_t &a) { return fscanf(engine->in, "%lf", &a); }
+                })};
+            }}
+        },
+        {
+            {"++", [](ExprNode *op) {
+                return Number{op->eval().ref(op->line)->asIntOp("++", op->line)++};
+            }},
+            {"--", [](ExprNode *op) {
+                return Number{op->eval().ref(op->line)->asIntOp("--", op->line)--};
+            }}
+        }
 };
 
 }
