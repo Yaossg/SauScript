@@ -144,9 +144,10 @@ struct Operand {
 };
 
 namespace Keyword {
-const std::string_view KW_TOKENS[] = {"let", "del", "while", "do", "end", "if", "else", "elif", "then", "try", "catch", "until", "repeat", "break", "continue", "for"};
+const std::string_view KW_TOKENS[] = {"let", "del", "while", "do", "end", "if", "else", "elif", "then", "try", "catch",
+                                      "until", "repeat", "break", "continue", "for", "throw", "input", "print"};
 enum {
-    LET, DEL, WHILE, DO, END, IF, ELSE, ELIF, THEN, TRY, CATCH, UNTIL, REPEAT, BREAK, CONTINUE, FOR,
+    LET, DEL, WHILE, DO, END, IF, ELSE, ELIF, THEN, TRY, CATCH, UNTIL, REPEAT, BREAK, CONTINUE, FOR, THROW, INPUT, PRINT,
 
     NAK // not a keyword
 };
@@ -232,10 +233,23 @@ struct OpBinaryNode : OpNode {
                  std::unique_ptr<ExprNode> lhs,
                  std::unique_ptr<ExprNode> rhs,
                  Fn fn): ExprNode(line),
-                         lhs(std::move(lhs)), rhs(std::move(rhs)), fn(std::move(fn)) {}
+                 lhs(std::move(lhs)), rhs(std::move(rhs)), fn(std::move(fn)) {}
 
     Operand eval() const override {
         return fn(lhs.get(), rhs.get());
+    }
+};
+
+struct OpTernaryNode : OpNode {
+    std::unique_ptr<ExprNode> cond, lhs, rhs;
+    OpTernaryNode(int line,
+                  std::unique_ptr<ExprNode> cond,
+                  std::unique_ptr<ExprNode> lhs,
+                  std::unique_ptr<ExprNode> rhs): ExprNode(line),
+                  cond(std::move(cond)), lhs(std::move(lhs)), rhs(std::move(rhs)) {}
+
+    Operand eval() const override {
+        return cond->eval().val().asBool(line) ? lhs->eval() : rhs->eval();
     }
 };
 
@@ -274,7 +288,8 @@ struct LetNode : StmtNode {
     LetNode(ScriptEngine* engine, int line, std::string name, std::unique_ptr<ExprNode> initializer)
             : engine(engine), line(line), name(std::move(name)), initializer(std::move(initializer)) {}
     void exec() const override {
-        if (engine->scopes.back().contains(name)) throw RuntimeError(name + " already exists in the current scope at line " + toLineString(line));
+        if (engine->scopes.back().contains(name))
+            throw RuntimeError(name + " already exists in the current scope at line " + toLineString(line));
         Number val = initializer->eval().val();
         engine->scopes.back()[name] = val;
     }
@@ -287,7 +302,8 @@ struct DelNode : StmtNode {
     DelNode(ScriptEngine* engine, int line, std::string name)
             : engine(engine), line(line), name(std::move(name)) {}
     void exec() const override {
-        if (!engine->scopes.back().contains(name)) throw RuntimeError(name + " is unavailable in the current scope at line " + toLineString(line));
+        if (!engine->scopes.back().contains(name))
+            throw RuntimeError(name + " is unavailable in the current scope at line " + toLineString(line));
         engine->scopes.back().erase(name);
     }
 };
@@ -305,6 +321,45 @@ struct ContinueNode : StmtNode {
     ContinueNode(int line): line(line) {}
     void exec() const override {
         throw ScriptContinue{line};
+    }
+};
+
+struct ThrowNode : StmtNode {
+    int line;
+    std::unique_ptr<ExprNode> thrown;
+    ThrowNode(int line, std::unique_ptr<ExprNode> thrown)
+            : line(line), thrown(std::move(thrown)) {}
+    void exec() const override {
+        throw ScriptException{thrown->eval().val(), line};
+    }
+};
+
+struct PrintNode : StmtNode {
+    ScriptEngine* engine;
+    std::unique_ptr<ExprNode> print;
+    PrintNode(ScriptEngine* engine, std::unique_ptr<ExprNode> print)
+            : engine(engine), print(std::move(print)) {}
+    void exec() const override {
+        print->eval().val().visit(overloaded {
+            [this](int_t a) { fprintf(engine->out, "%lld\n", a); },
+            [this](real_t a) { fprintf(engine->out, "%lg\n", a); }
+        });
+    }
+};
+
+struct InputNode : StmtNode {
+    ScriptEngine* engine;
+    int line;
+    std::string name;
+    InputNode(ScriptEngine* engine, int line, std::string name)
+            : engine(engine), line(line), name(std::move(name)) {}
+    void exec() const override {
+        if (!engine->scopes.back().contains(name))
+            throw RuntimeError(name + " is unavailable in the current scope at line " + toLineString(line));
+        engine->scopes.back()[name].visit(overloaded {
+            [this](int_t& a) { fscanf(engine->in, "%lld", &a); },
+            [this](real_t& a) { fscanf(engine->in, "%lf", &a); }
+        });
     }
 };
 
@@ -432,9 +487,8 @@ struct OperatorLevel {
     OperandType operandType;
 };
 
-inline const OperatorLevel OP_LEVELS[14] = {
-        {RIGHT_TO_LEFT, OperandType::PREFIX}, // throw
-        {RIGHT_TO_LEFT, OperandType::INFIX}, // assignment
+inline const OperatorLevel OP_LEVELS[13] = {
+        {RIGHT_TO_LEFT, OperandType::INFIX}, // assignment, ternary
         {LEFT_TO_RIGHT, OperandType::INFIX}, // logic or
         {LEFT_TO_RIGHT, OperandType::INFIX}, // logic and
         {LEFT_TO_RIGHT, OperandType::INFIX}, // bit or
@@ -451,24 +505,22 @@ inline const OperatorLevel OP_LEVELS[14] = {
 
 struct Operator {
     using Unary = OpUnaryNode::Fn;
-    using EUnary = std::function<Operand(ScriptEngine*, ExprNode*)>;
     using Binary = OpBinaryNode::Fn;
-    using EBinary = std::function<Operand(ScriptEngine*, ExprNode*, ExprNode*)>;
-    using Fn = std::variant<Unary, EUnary, Binary, EBinary>;
+    using Fn = std::variant<Unary, Binary>;
 
     std::string_view literal;
     Fn fn;
 
-    Unary asUnary(ScriptEngine* engine) const {
-        return std::holds_alternative<EUnary>(fn) ? std::bind_front(std::get<EUnary>(fn), engine) : std::get<Unary>(fn);
+    Unary asUnary() const {
+        return std::get<Unary>(fn);
     }
 
-    Binary asBinary(ScriptEngine* engine) const {
-        return std::holds_alternative<EBinary>(fn) ? std::bind_front(std::get<EBinary>(fn), engine) : std::get<Binary>(fn);
+    Binary asBinary() const {
+        return std::get<Binary>(fn);
     }
 };
 
-extern const std::vector<Operator> OPERATORS[14];
+extern const std::vector<Operator> OPERATORS[13];
 
 inline Operator const* findOperator(std::string const& literal, int level) {
     auto first = OPERATORS[level].begin(), last = OPERATORS[level].end();

@@ -19,6 +19,12 @@ namespace SauScript {
         } else if (ch == ')') {
             tokens.push_back(Token::parenRight().at(line));
             ++source;
+        } else if (ch == '?') {
+            tokens.push_back(Token::punctuation("?").at(line));
+            ++source;
+        } else if (ch == ':') {
+            tokens.push_back(Token::punctuation(":").at(line));
+            ++source;
         } else if (isIdentifierStart(ch)) {
             char const* first = source;
             while (isIdentifierContinue(*++source));
@@ -83,7 +89,7 @@ std::optional<Operand> ScriptEngine::findOperand(const std::string& name) {
     return std::nullopt;
 }
 
-std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level) {
+std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level = 0) {
     if (level > 13) {
         auto token = *current++;
         switch (token.type) {
@@ -97,17 +103,17 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                 return std::make_unique<RefNode>(this, token.line, token.identifier());
         }
         if (token == Token::parenLeft()) {
-            auto expr = compileExpression(current, 0);
+            auto expr = compileExpression(current);
             if (*current++ != Token::parenRight()) throw SyntaxError("missing ')' to match '(' at line " + toLineString(current->line));
             return expr;
         }
-        throw SyntaxError("invalid leaf node token for expression at line " + toLineString(current->line));
+        throw SyntaxError("unexpected leaf node token for expression at line " + toLineString(current->line));
     }
     switch (Operator const* op; OP_LEVELS[level].operandType) {
         case OperandType::PREFIX: {
             if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
                 int line = current++->line;
-                return std::make_unique<OpUnaryNode>(line, compileExpression(current, level), op->asUnary(this));
+                return std::make_unique<OpUnaryNode>(line, compileExpression(current, level), op->asUnary());
             }
             return compileExpression(current, level + 1);
         }
@@ -115,23 +121,34 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
             auto expr = compileExpression(current, level + 1);
             if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
                 int line = current++->line;
-                return std::make_unique<OpUnaryNode>(line, std::move(expr), op->asUnary(this));
+                return std::make_unique<OpUnaryNode>(line, std::move(expr), op->asUnary());
             }
             return expr;
         }
         case OperandType::INFIX: {
             if (OP_LEVELS[level].associativity) {
                 auto expr = compileExpression(current, level + 1);
-                if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
-                    int line = current++->line;
-                    return std::make_unique<OpBinaryNode>(line, std::move(expr), compileExpression(current, level), op->asBinary(this));
+                if (current->type == TokenType::PUNCTUATION) {
+                    if ((op = findOperator(current->punctuation(), level))) {
+                        int line = current++->line;
+                        return std::make_unique<OpBinaryNode>(line, std::move(expr), compileExpression(current, level), op->asBinary());
+                    } else if (level == 0 && *current == Token::punctuation("?")) {
+                        int line = current++->line;
+                        auto lhs = compileExpression(current, level);
+                        if (*current == Token::punctuation(":")) {
+                            auto rhs = compileExpression(++current, level);
+                            return std::make_unique<OpTernaryNode>(line, std::move(expr), std::move(lhs), std::move(rhs));
+                        } else {
+                            throw SyntaxError("missing ':' for '?' at line " + toLineString(line));
+                        }
+                    }
                 }
                 return expr;
             } else {
                 auto expr = compileExpression(current, level + 1);
                 while (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
                     int line = current++->line;
-                    expr = std::make_unique<OpBinaryNode>(line, std::move(expr), compileExpression(current, level + 1), op->asBinary(this));
+                    expr = std::make_unique<OpBinaryNode>(line, std::move(expr), compileExpression(current, level + 1), op->asBinary());
                 }
                 return expr;
             }
@@ -144,7 +161,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(std::vector<Token> tok
     if (tokens.empty()) throw RuntimeError("unexpected empty expression");
     tokens.push_back(Token::eot());
     Token* current = tokens.data();
-    return compileExpression(current, 0);
+    return compileExpression(current);
 }
 
 std::unique_ptr<StmtNode> ScriptEngine::compileStatement(std::vector<Token> tokens) {
@@ -178,6 +195,26 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatement(std::vector<Token> toke
                     return std::make_unique<ContinueNode>(first.line);
                 } else {
                     throw SyntaxError("bad continue statement at line " + first.at());
+                }
+            case THROW:
+                if (tokens.size() > 1) {
+                    tokens.erase(tokens.begin());
+                    return std::make_unique<ThrowNode>(first.line, compileExpression(tokens));
+                } else {
+                    throw SyntaxError("bad throw statement at line " + first.at());
+                }
+            case PRINT:
+                if (tokens.size() > 1) {
+                    tokens.erase(tokens.begin());
+                    return std::make_unique<PrintNode>(this, compileExpression(tokens));
+                } else {
+                    throw SyntaxError("bad print statement at line " + first.at());
+                }
+            case INPUT:
+                if (tokens.size() == 2 && tokens[1].type == TokenType::IDENTIFIER) {
+                    return std::make_unique<InputNode>(this, first.line, tokens[1].identifier());
+                } else {
+                    throw SyntaxError("bad input statement at line " + first.at());
                 }
         }
     }
@@ -390,16 +427,7 @@ auto intAssignment(char const* name, Fn fn, Assertion* an = noop_assert) {
     };
 }
 
-const std::vector<Operator> OPERATORS[14] = {
-        {
-            {"print", [](ScriptEngine* engine, ExprNode* op) {
-                return Number{op->eval().val().visit(overloaded {
-                        [engine](int_t a) { return fprintf(engine->out, "%lld\n", a); },
-                        [engine](real_t a) { return fprintf(engine->out, "%lg\n", a); }
-                }) - 1};
-            }},
-            {"throw", [](ExprNode* op)->Operand { throw ScriptException{op->eval().val(), op->line}; }}
-        },
+const std::vector<Operator> OPERATORS[13] = {
         {
             {"=",  simpleAssignment([](auto& lhs, auto rhs) { lhs = rhs; })},
             {"+=", simpleAssignment([](auto& lhs, auto rhs) { lhs += rhs; })},
@@ -409,6 +437,7 @@ const std::vector<Operator> OPERATORS[14] = {
                 auto a = lhs->eval();
                 std::visit(overloaded {
                         [line = rhs->line](int_t& lhs, int_t rhs) { division_assert(rhs, line); lhs /= rhs; },
+                        [line = rhs->line](int_t& lhs, real_t rhs) { division_assert(rhs, line); lhs /= rhs; },
                         [](auto& lhs, auto rhs) { lhs /= rhs; }
                 }, a.ref(lhs->line)->object, rhs->eval().val().object);
                 return a;
@@ -473,13 +502,7 @@ const std::vector<Operator> OPERATORS[14] = {
                 return op->eval().val().visit([](auto a) { return Number{-a}; });
             }},
             {"!", [](ExprNode *op) { return Number{!op->eval().val().asBool(op->line)}; }},
-            {"~", [](ExprNode *op) { return Number{~op->eval().val().asIntOp("~", op->line)}; }},
-            {"input", [](ScriptEngine *engine, ExprNode *op) {
-                return Number{op->eval().ref(op->line)->visit(overloaded{
-                        [engine](int_t &a) { return fscanf(engine->in, "%lld", &a); },
-                        [engine](real_t &a) { return fscanf(engine->in, "%lf", &a); }
-                })};
-            }}
+            {"~", [](ExprNode *op) { return Number{~op->eval().val().asIntOp("~", op->line)}; }}
         },
         {
             {"++", [](ExprNode *op) {
