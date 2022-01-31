@@ -1,6 +1,11 @@
 #include "SauScript.hpp"
 
 #include <cmath>
+#include <numeric>
+#include <numbers>
+#include <ctime>
+#include <chrono>
+#include <cstdlib>
 
 namespace SauScript {
 
@@ -64,8 +69,7 @@ const std::vector<Operator> OPERATORS[13] = {
                 {"/=", [](ExprNode* lhs, ExprNode* rhs) {
                     auto a = lhs->eval();
                     std::visit(overloaded {
-                            [line = rhs->line](int_t* lhs, int_t* rhs) { division_assert(*rhs, line); *lhs /= *rhs; },
-                            [line = rhs->line](int_t* lhs, real_t* rhs) { division_assert(*rhs, line); *lhs /= *rhs; },
+                            [line = rhs->line](int_t* lhs, auto* rhs) { division_assert(*rhs, line); *lhs /= *rhs; },
                             [](auto* lhs, auto* rhs) { *lhs /= *rhs; }
                     }, a.ref(lhs->line)->asNumber(lhs->line), rhs->eval().val().asNumber(rhs->line));
                     return a;
@@ -143,52 +147,89 @@ const std::vector<Operator> OPERATORS[13] = {
 };
 
 void installEnvironment(ScriptEngine* engine) {
-    engine->installExternalFunction("int", [](real_t x) { return int_t(x); });
-    engine->installExternalFunction("real", [](int_t x) { return real_t(x); });
-    engine->installExternalFunction("ceil", ::ceil);
-    engine->installExternalFunction("floor", ::floor);
-    engine->installExternalFunction("trunc", ::trunc);
-    engine->installExternalFunction("round", ::llround);
-    engine->installExternalFunction("abs", ::llabs);
-    engine->installExternalFunction("fabs", ::fabs);
-    engine->installExternalFunction("fmod", ::fmod);
-    engine->installExternalFunction("remainder", ::remainder);
-    engine->installExternalFunction("fma", ::fma);
-    engine->installExternalFunction("min", [](int_t a, int_t b) { return a < b ? a : b; });
-    engine->installExternalFunction("max", [](int_t a, int_t b) { return a > b ? a : b; });
-    engine->installExternalFunction("fmin", ::fmin);
-    engine->installExternalFunction("fmax", ::fmax);
+    engine->installExternalFunction("int",      [](real_t x) { return int_t(x); });
+    engine->installExternalFunction("real",     [](int_t x) { return real_t(x); });
+    engine->installExternalFunction("ceil",     ::ceil);
+    engine->installExternalFunction("floor",    ::floor);
+    engine->installExternalFunction("trunc",    ::trunc);
+    engine->installExternalFunction("round",    ::llround);
+    engine->installExternalFunction("abs",      ::llabs);
+    engine->installExternalFunction("fabs",     ::fabs);
+    engine->installExternalFunction("fmod",     ::fmod);
+    engine->installExternalFunction("remainder",::remainder);
+    engine->installExternalFunction("fma",      ::fma);
+    engine->installExternalFunction("min",      [](int_t a, int_t b) { return a < b ? a : b; });
+    engine->installExternalFunction("max",      [](int_t a, int_t b) { return a > b ? a : b; });
+    engine->installExternalFunction("fmin",     ::fmin);
+    engine->installExternalFunction("fmax",     ::fmax);
 
-    engine->installExternalFunction("exp", ::exp);
-    engine->installExternalFunction("exp2", ::exp2);
-    engine->installExternalFunction("expm1", ::expm1);
-    engine->installExternalFunction("log", ::log);
-    engine->installExternalFunction("log2", ::log2);
-    engine->installExternalFunction("log10", ::log10);
-    engine->installExternalFunction("log1p", ::log1p);
-    engine->installExternalFunction("pow", ::pow);
-    engine->installExternalFunction("sqrt", ::sqrt);
-    engine->installExternalFunction("cbrt", ::cbrt);
-    engine->installExternalFunction("hypot", ::hypot);
+    engine->installExternalFunction("exp",      ::exp);
+    engine->installExternalFunction("exp2",     ::exp2);
+    engine->installExternalFunction("expm1",    ::expm1);
+    engine->installExternalFunction("log",      ::log);
+    engine->installExternalFunction("log2",     ::log2);
+    engine->installExternalFunction("log10",    ::log10);
+    engine->installExternalFunction("log1p",    ::log1p);
+    engine->installExternalFunction("pow",      ::pow);
+    engine->installExternalFunction("sqrt",     ::sqrt);
+    engine->installExternalFunction("cbrt",     ::cbrt);
+    engine->installExternalFunction("hypot",    ::hypot);
 
-    engine->installExternalFunction("sin", ::sin);
-    engine->installExternalFunction("cos", ::cos);
-    engine->installExternalFunction("tan", ::tan);
-    engine->installExternalFunction("asin", ::asin);
-    engine->installExternalFunction("acos", ::acos);
-    engine->installExternalFunction("atan", ::atan);
-    engine->installExternalFunction("atan2", ::atan2);
-    engine->installExternalFunction("sinh", ::sinh);
-    engine->installExternalFunction("cosh", ::cosh);
-    engine->installExternalFunction("tanh", ::tanh);
-    engine->installExternalFunction("asinh", ::asinh);
-    engine->installExternalFunction("acosh", ::acosh);
-    engine->installExternalFunction("atanh", ::atanh);
+    engine->installExternalFunction("sin",      ::sin);
+    engine->installExternalFunction("cos",      ::cos);
+    engine->installExternalFunction("tan",      ::tan);
+    engine->installExternalFunction("asin",     ::asin);
+    engine->installExternalFunction("acos",     ::acos);
+    engine->installExternalFunction("atan",     ::atan);
+    engine->installExternalFunction("atan2",    ::atan2);
+    engine->installExternalFunction("sinh",     ::sinh);
+    engine->installExternalFunction("cosh",     ::cosh);
+    engine->installExternalFunction("tanh",     ::tanh);
+    engine->installExternalFunction("asinh",    ::asinh);
+    engine->installExternalFunction("acosh",    ::acosh);
+    engine->installExternalFunction("atanh",    ::atanh);
 
-    engine->installExternalFunction("erf", ::erf);
-    engine->installExternalFunction("erfc", ::erfc);
-    engine->installExternalFunction("tgamma", ::tgamma);
-    engine->installExternalFunction("lgamma", ::lgamma);
+    engine->installExternalFunction("erf",      ::erf);
+    engine->installExternalFunction("erfc",     ::erfc);
+    engine->installExternalFunction("tgamma",   ::tgamma);
+    engine->installExternalFunction("lgamma",   ::lgamma);
+    engine->installExternalFunction("beta",     std::beta<real_t, real_t>);
+
+    engine->installExternalFunction("gcd",      std::gcd<int_t, int_t>);
+    engine->installExternalFunction("lcm",      std::lcm<int_t, int_t>);
+    engine->installExternalFunction("midpoint", (int_t(*)(int_t, int_t))std::midpoint);
+    engine->installExternalFunction("fmidpoint",(real_t(*)(real_t, real_t))std::midpoint);
+    engine->installExternalFunction("lerp",     (real_t(*)(real_t, real_t, real_t))std::lerp);
+
+    engine->installExternalFunction("time",     [] { return ::time(nullptr); });
+    engine->installExternalFunction("clock",    ::clock);
+    engine->installExternalFunction("nanos",    [] { return std::chrono::system_clock::now().time_since_epoch().count(); });
+
+    {
+        using namespace std::numbers;
+        engine->global()["e"]           = {e};
+        engine->global()["log2e"]       = {log2e};
+        engine->global()["log10e"]      = {log10e};
+        engine->global()["pi"]          = {pi};
+        engine->global()["inv_pi"]      = {inv_pi};
+        engine->global()["inv_sqrtpi"]  = {inv_sqrtpi};
+        engine->global()["sqrt2"]       = {sqrt2};
+        engine->global()["sqrt3"]       = {sqrt3};
+        engine->global()["inv_sqrt3"]   = {inv_sqrt3};
+        engine->global()["egamma"]      = {egamma};
+        engine->global()["phi"]         = {phi};
+    }
+
+    ::srand(1);
+    engine->installExternalFunction("srand",    ::srand);
+    engine->installExternalFunction("rand",     ::rand);
+    engine->global()["RAND_MAX"]        = {RAND_MAX};
+
+    engine->installExternalFunction("counter",  [i = 0]() mutable { return i++; });
+
+    engine->installExternalFunction("void",     []{});
+
+    engine->global()["__cplusplus"]     = {__cplusplus};
 }
 
 }

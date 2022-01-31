@@ -30,6 +30,8 @@ namespace SauScript {
                 tokens.push_back(Token::literal_bool(false).at(line));
             } else if (token == "true") {
                 tokens.push_back(Token::literal_bool(true).at(line));
+            } else if (token == "__LINE__") {
+                tokens.push_back(Token::literal_int(line).at(line));
             } else if (token == "nan") {
                 tokens.push_back(Token::literal_real(0.0 / 0.0).at(line));
             } else if (token == "inf") {
@@ -78,12 +80,12 @@ namespace SauScript {
     return tokens;
 }
 
-std::optional<Operand> ScriptEngine::findOperand(const std::string& name) {
+Operand ScriptEngine::findOperand(const std::string& name, int line) {
     for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
         auto&& scope = *it;
         if (scope.contains(name)) return &scope[name];
     }
-    return std::nullopt;
+    throw RuntimeError("reference to undefined variable '" + name + "'" + at(line));
 }
 
 std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level = 0) {
@@ -233,7 +235,7 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatement(std::vector<Token> toke
                     tokens.erase(tokens.begin());
                     return std::make_unique<ReturnNode>(first.line, compileExpression(tokens));
                 } else {
-                    throw SyntaxError("bad return statement" + first.at());
+                    return std::make_unique<ReturnNode>(first.line, std::make_unique<ValNode>(first.line, Object{std::monostate()}));
                 }
         }
     }
@@ -436,7 +438,7 @@ void ScriptEngine::exec(const char* script, FILE* err) {
     try {
         compile(script)->exec();
     } catch (ScriptReturn& e) {
-        fprintf(out, "Script returned with type %d\n", e.returned.type());
+        fprintf(out, "Script returned: %s\n", e.returned.toString().c_str());
     } catch (ScriptBreak& e) {
         fprintf(err, "Wild break%s\n", at(e.line).c_str());
     } catch (ScriptContinue& e) {
@@ -479,7 +481,9 @@ Object Object::invoke(int line, ScriptEngine* engine, const std::vector<Object> 
             throw RuntimeError("invalid return type" + at(e.line));
         }
     }
-    throw RuntimeError("function without returning anything" + at(line));
+    if (fn.returnType == Type::VOID)
+        return Object{std::monostate()};
+    throw RuntimeError("non-void function returns nothing" + at(line));
 }
 
 }

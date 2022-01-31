@@ -8,6 +8,10 @@ using SauScript::ScriptEngine;
 void file() {
     ScriptEngine engine;
     FILE* fp = fopen("script.txt", "r");
+    if (fp == NULL) {
+        printf("Failed to open script.txt\n");
+        return;
+    }
     string script;
     do {
         char line[256];
@@ -21,7 +25,6 @@ void file() {
 
 [[noreturn]] void repl() {
     ScriptEngine engine;
-    ios::sync_with_stdio(true);
 
     while (true) {
         string line;

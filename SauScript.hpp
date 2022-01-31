@@ -80,10 +80,12 @@ inline bool isNumberStart(char ch) {
     return std::isdigit(ch);
 }
 
-static std::string_view TYPE_NAMES[3] = {"int", "real", "func"};
+static std::string_view TYPE_NAMES[] = {"int", "real", "func", "void"};
 
 enum class Type {
-    INT, REAL, FUNC
+    INT, REAL, FUNC, VOID,
+
+    NAT // not a type
 };
 
 using int_t = long long;
@@ -96,6 +98,8 @@ constexpr Type parseType() {
         return Type::INT;
     } else if constexpr(std::is_floating_point_v<T>) {
         return Type::REAL;
+    } else if constexpr(std::is_void_v<T>) {
+        return Type::VOID;
     }
     throw SyntaxError("unsupported type currently");
 }
@@ -112,10 +116,7 @@ struct Function {
 };
 
 struct Object {
-    std::variant<int_t, real_t, FuncPtr> object;
-
-    Object() = default;
-    Object(std::variant<int_t, real_t, FuncPtr> object): object(std::move(object)) {}
+    std::variant<int_t, real_t, FuncPtr, std::monostate> object;
 
     [[nodiscard]] bool asBool(int line) {
         if (std::holds_alternative<int_t>(object))
@@ -126,11 +127,7 @@ struct Object {
     int_t& asIntOp(char const* op, int line) {
         if (std::holds_alternative<int_t>(object))
             return std::get<int_t>(object);
-        std::string
-            msg  = "expected int operand for ";
-            msg += op;
-            msg += at(line);
-        throw RuntimeError(msg);
+        throw RuntimeError(std::string("expected int operand for '") + op + "'" + at(line));
     }
 
     [[nodiscard]] Object promote(int line) const {
@@ -149,20 +146,18 @@ struct Object {
         switch (object.index()) {
             case 0: return &std::get<0>(object);
             case 1: return &std::get<1>(object);
-            default: throw RuntimeError("expected number but got a function" + at(line));
+            case 2: throw RuntimeError("expected number but got a function" + at(line));
+            default:
+            case 3: throw RuntimeError("expected number but got void" + at(line));
         }
-    }
-
-    template<typename Fn>
-    auto visit(Fn&& fn) {
-        return std::visit(std::forward<Fn>(fn), object);
     }
 
     [[nodiscard]] std::string toString() const {
         return std::visit(overloaded {
             [](auto x) { return std::to_string(x); },
+            [](std::monostate) { return std::string("<void>"); },
             [](FuncPtr const& ptr) {
-                std::string ret = "function(";
+                std::string ret = "<function(";
                 bool first = true;
                 for (auto&& [type, name] : ptr->parameters) {
                     if (first) { first = false; } else { ret += ", "; }
@@ -172,6 +167,7 @@ struct Object {
                 }
                 ret += "): ";
                 ret += TYPE_NAMES[(size_t)ptr->returnType];
+                ret += ">";
                 return ret;
             }
         }, object);
@@ -193,11 +189,7 @@ struct ScriptException final : std::exception {
     std::string msg;
 
     ScriptException(Object const& thrown, int line): thrown(thrown),
-        msg   ("Unhandled script exception '") {
-        msg += thrown.toString();
-        msg += "' thrown";
-        msg += at(line);
-    }
+        msg(std::string("Unhandled script exception '") + thrown.toString() + "' thrown" + at(line)) {}
 
     [[nodiscard]] char const* what() const noexcept override {
         return msg.c_str();
@@ -261,8 +253,8 @@ struct Operator {
     std::string_view literal;
     Fn fn;
 
-    [[nodiscard]] Unary asUnary() const { return std::get<Unary>(fn); }
-    [[nodiscard]] Binary asBinary() const { return std::get<Binary>(fn); }
+    [[nodiscard]] Unary const& asUnary() const { return std::get<Unary>(fn); }
+    [[nodiscard]] Binary const& asBinary() const { return std::get<Binary>(fn); }
 };
 
 extern const std::vector<Operator> OPERATORS[13];
@@ -287,10 +279,12 @@ inline std::vector<std::string_view> const& opTokens() {
 }
 
 namespace Keyword {
-const std::string_view KW_TOKENS[] = {"let", "del", "while", "do", "end", "if", "else", "elif", "then", "try", "catch",
-                                      "until", "repeat", "break", "continue", "for", "throw", "input", "print", "return", "function"};
+const std::string_view KW_TOKENS[] =
+        {"let", "del", "while", "do", "end", "if", "else", "elif", "then", "try", "catch",
+         "until", "repeat", "break", "continue", "for", "throw", "input", "print", "return", "function"};
 enum {
-    LET, DEL, WHILE, DO, END, IF, ELSE, ELIF, THEN, TRY, CATCH, UNTIL, REPEAT, BREAK, CONTINUE, FOR, THROW, INPUT, PRINT, RETURN, FUNCTION,
+    LET, DEL, WHILE, DO, END, IF, ELSE, ELIF, THEN, TRY, CATCH,
+    UNTIL, REPEAT, BREAK, CONTINUE, FOR, THROW, INPUT, PRINT, RETURN, FUNCTION,
 
     NAK // not a keyword
 };
@@ -311,6 +305,7 @@ struct ScriptEngine {
     using Scope = std::map<std::string, Object>;
     std::deque<Scope> scopes;
     FILE *out, *in;
+    int state = -1;
 
     ScriptEngine(FILE* out = stdout, FILE* in = stdin): out(out), in(in), scopes{{}, {}} {
         installEnvironment(this);
@@ -324,7 +319,7 @@ struct ScriptEngine {
         global()[name] = Object{external(std::function{fn})(this)};
     }
 
-    std::optional<Operand> findOperand(std::string const& name);
+    Operand findOperand(std::string const& name, int line);
 
     [[nodiscard]] std::unique_ptr<ExprNode> compileExpression(Token*& current, int level);
     [[nodiscard]] std::unique_ptr<ExprNode> compileExpression(std::vector<Token> tokens);
@@ -346,9 +341,11 @@ struct ScriptScope {
     ScriptEngine* engine;
     ScriptScope(ScriptEngine* engine): engine(engine) {
         engine->scopes.emplace_back();
+        ++engine->state;
     }
     ~ScriptScope() {
         engine->scopes.pop_back();
+        ++engine->state;
     }
 };
 
@@ -359,30 +356,32 @@ struct ExprNode {
     virtual ~ExprNode() = default;
 };
 
-struct ObjNode : virtual ExprNode {};
-
-struct ValNode : ObjNode {
+struct ValNode : ExprNode {
     Object val;
     ValNode(int line, Object val): ExprNode(line), val(std::move(val)) {}
     Operand eval() const override {
-        return Object{val};
+        return val;
     }
 };
 
-struct RefNode : ObjNode {
+struct RefNode : ExprNode {
     ScriptEngine* engine;
     std::string name;
     RefNode(ScriptEngine* engine, int line, std::string name): engine(engine), ExprNode(line), name(std::move(name)) {}
+
+    mutable int state = -1;
+    mutable std::optional<Operand> cache;
+
     Operand eval() const override {
-        if (auto operand = engine->findOperand(name))
-            return operand.value();
-        throw RuntimeError("reference to undefined variable '" + name + "'" + at(line));
+        if (!cache.has_value() || state != engine->state) {
+            cache = engine->findOperand(name, line);
+            state = engine->state;
+        }
+        return cache.value();
     }
 };
 
-struct OpNode : virtual ExprNode {};
-
-struct OpUnaryNode : OpNode {
+struct OpUnaryNode : ExprNode {
     std::unique_ptr<ExprNode> operand;
     Operator const* op;
     OpUnaryNode(int line,
@@ -395,7 +394,7 @@ struct OpUnaryNode : OpNode {
     }
 };
 
-struct OpBinaryNode : OpNode {
+struct OpBinaryNode : ExprNode {
     std::unique_ptr<ExprNode> lhs, rhs;
     Operator const* op;
     OpBinaryNode(int line,
@@ -409,7 +408,7 @@ struct OpBinaryNode : OpNode {
     }
 };
 
-struct OpTernaryNode : OpNode {
+struct OpTernaryNode : ExprNode {
     std::unique_ptr<ExprNode> cond, lhs, rhs;
     OpTernaryNode(int line,
                   std::unique_ptr<ExprNode> cond,
@@ -422,7 +421,7 @@ struct OpTernaryNode : OpNode {
     }
 };
 
-struct OpInvokeNode : OpNode {
+struct OpInvokeNode : ExprNode {
     ScriptEngine* engine;
     std::unique_ptr<ExprNode> func;
     std::vector<std::unique_ptr<ExprNode>> args;
@@ -480,6 +479,7 @@ struct LetNode : StmtNode {
             throw RuntimeError(name + " already exists in the local scope" + at(line));
         Object val = initializer->eval().val();
         engine->local()[name] = val;
+        ++engine->state;
     }
 };
 
@@ -493,6 +493,7 @@ struct DelNode : StmtNode {
         if (!engine->local().contains(name))
             throw RuntimeError(name + " is not found in the local scope" + at(line));
         engine->local().erase(name);
+        ++engine->state;
     }
 };
 
@@ -539,18 +540,20 @@ struct InputNode : StmtNode {
     InputNode(ScriptEngine* engine, int line, std::string name)
             : engine(engine), line(line), name(std::move(name)) {}
     void exec() const override {
-        engine->findOperand(name)->ref(line)->visit(overloaded {
+        std::visit(overloaded {
             [this](int_t& a) { if (!fscanf(engine->in, "%lld", &a)) throw RuntimeError("illegal input as int"); },
             [this](real_t& a) { if (!fscanf(engine->in, "%lf", &a)) throw RuntimeError("illegal input as real"); },
-            [this](FuncPtr& a) { throw RuntimeError("attempt to input a function" + at(line)); }
-        });
+            [this](FuncPtr& a) { throw RuntimeError("attempt to input a function" + at(line)); },
+            [this](std::monostate& a) { throw RuntimeError("attempt to input void" + at(line)); }
+        }, engine->findOperand(name, line).ref(line)->object);
     }
 };
 
 struct ReturnNode : StmtNode {
     std::unique_ptr<ExprNode> returned;
     int line;
-    ReturnNode(int line, std::unique_ptr<ExprNode> returned): line(line), returned(std::move(returned)) {}
+    ReturnNode(int line, std::unique_ptr<ExprNode> returned)
+        : line(line), returned(std::move(returned)) {}
     void exec() const override {
         throw ScriptReturn{returned->eval().val(), line};
     }
@@ -733,10 +736,11 @@ struct Token {
 inline Type parseType(Token const& token) {
     if (token.type != TokenType::IDENTIFIER) throw SyntaxError("expected type name" + token.at());
     std::string name = token.identifier();
-    if (name == "int") return Type::INT;
-    else if (name == "real") return Type::REAL;
-    else if (name == "func") return Type::FUNC;
-    throw SyntaxError("invalid type name" + token.at());
+    auto first = std::begin(TYPE_NAMES), last = std::end(TYPE_NAMES);
+    Type type = Type(std::find(first, last, name) - first);
+    if (type == Type::NAT)
+        throw SyntaxError("invalid type name" + token.at());
+    return type;
 }
 
 template<size_t I>
@@ -766,8 +770,7 @@ struct ExternalFunctionNode : ExprNode {
 template<typename R, typename... Args>
 std::function<FuncPtr(ScriptEngine*)> external(std::function<R(Args...)> function) {
     static_assert(!std::is_reference_v<R>);
-    static_assert((!std::is_reference_v<Args> || ...));
-    static_assert(!std::is_void_v<R>);
+    static_assert((!sizeof...(Args) || ... || !std::is_reference_v<Args>));
     return [function](ScriptEngine* engine) {
         return std::make_shared<Function>(Function{parseType<R>(), externalParameters<Args...>(std::index_sequence_for<Args...>()),
                 std::make_unique<ReturnNode>(0, std::make_unique<ExternalFunctionNode<R, Args...>>(engine, function))});
@@ -777,7 +780,12 @@ std::function<FuncPtr(ScriptEngine*)> external(std::function<R(Args...)> functio
 template<typename R, typename... Args>
 template<size_t... I>
 Operand ExternalFunctionNode<R, Args...>::eval(std::index_sequence<I...>) const {
-    return Object{function(engine->findOperand(externalParameterName<I>())->val().template as<Args>()...)};
+    if constexpr(std::is_void_v<R>) {
+        function(engine->findOperand(externalParameterName<I>(), 0).val().template as<Args>()...);
+        return Object{std::monostate()};
+    } else {
+        return Object{function(engine->findOperand(externalParameterName<I>(), 0).val().template as<Args>()...)};
+    }
 }
 
 }
