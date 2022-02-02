@@ -175,11 +175,14 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(std::vector<Token> tok
     if (tokens.empty()) throw RuntimeError("unexpected empty expression");
     tokens.push_back(Token::eot());
     Token* current = tokens.data();
-    return compileExpression(current);
+    auto expr = compileExpression(current);
+    if (current != tokens.data() + tokens.size() - 1)
+        throw RuntimeError("Unexpected token" + current->at());
+    return expr;
 }
 
 std::unique_ptr<StmtNode> ScriptEngine::compileStatement(std::vector<Token> tokens) {
-    if (tokens.empty()) return std::make_unique<StmtNoopNode>();
+    if (tokens.empty()) return std::make_unique<StmtNoopNode>(this);
     if (auto&& first = tokens[0]; first.type == TokenType::KEYWORD) {
         using namespace Keyword;
         switch (first.keyword()) {
@@ -200,22 +203,29 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatement(std::vector<Token> toke
                 }
             case BREAK:
                 if (tokens.size() == 1) {
-                    return std::make_unique<BreakNode>(first.line);
+                    return std::make_unique<JumpNode>(this, first.line, JumpTarget::BREAK);
                 } else {
                     throw SyntaxError("bad break statement" + first.at());
                 }
             case CONTINUE:
                 if (tokens.size() == 1) {
-                    return std::make_unique<ContinueNode>(first.line);
+                    return std::make_unique<JumpNode>(this, first.line, JumpTarget::CONTINUE);
                 } else {
                     throw SyntaxError("bad continue statement" + first.at());
                 }
             case THROW:
                 if (tokens.size() > 1) {
                     tokens.erase(tokens.begin());
-                    return std::make_unique<ThrowNode>(first.line, compileExpression(tokens));
+                    return std::make_unique<ThrowNode>(this, first.line, compileExpression(tokens));
                 } else {
                     throw SyntaxError("bad throw statement" + first.at());
+                }
+            case RETURN:
+                if (tokens.size() > 1) {
+                    tokens.erase(tokens.begin());
+                    return std::make_unique<ReturnNode>(this, first.line, compileExpression(tokens));
+                } else {
+                    return std::make_unique<ReturnNode>(this, first.line, std::make_unique<ValNode>(first.line, Object{std::monostate()}));
                 }
             case PRINT:
                 if (tokens.size() > 1) {
@@ -230,16 +240,9 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatement(std::vector<Token> toke
                 } else {
                     throw SyntaxError("bad input statement" + first.at());
                 }
-            case RETURN:
-                if (tokens.size() > 1) {
-                    tokens.erase(tokens.begin());
-                    return std::make_unique<ReturnNode>(first.line, compileExpression(tokens));
-                } else {
-                    return std::make_unique<ReturnNode>(first.line, std::make_unique<ValNode>(first.line, Object{std::monostate()}));
-                }
         }
     }
-    return std::make_unique<StmtExprNode>(compileExpression(tokens));
+    return std::make_unique<StmtExprNode>(this, compileExpression(tokens));
 }
 
 std::unique_ptr<StmtNode> ScriptEngine::compileWhile(Token*& current) {
@@ -318,14 +321,14 @@ std::unique_ptr<StmtNode> ScriptEngine::compileIf(Token*& current) {
     if (current->type == TokenType::KEYWORD)
         switch (current->keyword()) {
             case END:
-                return std::make_unique<IfNode>(this, std::move(cond), std::move(then));
+                return std::make_unique<IfNode>(this, std::move(cond), std::move(then), std::make_unique<StmtNoopNode>(this));
             case ELSE: {
                 auto else_ = compileStatements(++current);
                 if (*current != Token::keyword(END)) throw SyntaxError("missing end in if" + current->at());
                 return std::make_unique<IfNode>(this, std::move(cond), std::move(then), std::move(else_));
             }
             case ELIF: {
-                *current = Token::keyword(IF);
+                *current = Token::keyword(IF).at(current->line);
                 return std::make_unique<IfNode>(this, std::move(cond), std::move(then), compileIf(current));
             }
         }
@@ -370,7 +373,7 @@ std::unique_ptr<StmtNode> ScriptEngine::compileFunction(Token*& current) {
     std::unique_ptr<StmtNode> stmt;
     if (*++current == Token::punctuation("=")) {
         auto expr = compileExpression(++current);
-        stmt = std::make_unique<ReturnNode>(expr->line, std::move(expr));
+        stmt = std::make_unique<ReturnNode>(this, expr->line, std::move(expr));
     } else {
         stmt = compileStatements(current);
         if (*current != Token::keyword(Keyword::END))
@@ -425,7 +428,7 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatements(Token*& current) {
         }
         line.push_back(*current);
     } outer:
-    return std::make_unique<StmtSeqNode>(std::move(stmts));
+    return std::make_unique<StmtSeqNode>(this, std::move(stmts));
 }
 
 std::unique_ptr<StmtNode> ScriptEngine::compile(const char* script) {
@@ -437,14 +440,14 @@ std::unique_ptr<StmtNode> ScriptEngine::compile(const char* script) {
 void ScriptEngine::exec(const char* script, FILE* err) {
     try {
         compile(script)->exec();
-    } catch (ScriptReturn& e) {
-        fprintf(out, "Script returned: %s\n", e.returned.toString().c_str());
-    } catch (ScriptBreak& e) {
-        fprintf(err, "Wild break%s\n", at(e.line).c_str());
-    } catch (ScriptContinue& e) {
-        fprintf(err, "Wild continue%s\n", at(e.line).c_str());
-    } catch (ScriptException& caught) {
-        fprintf(err, caught.what());
+        if (jumpTarget == JumpTarget::RETURN) {
+            fprintf(out, "Script returned: %s", target.toString().c_str());
+        } else if (jumpTarget == JumpTarget::THROW) {
+            fprintf(err, "Unhandled exception: %s", target.toString().c_str());
+        } else if (jumpTarget != JumpTarget::NONE) {
+            jumpTarget = JumpTarget::NONE;
+            throw RuntimeError("Wild loop jump" + at(jumpFrom));
+        }
     } catch (SyntaxError& e) {
         fprintf(err, "Syntax error: %s\n", e.what());
     } catch (RuntimeError& e) {
@@ -458,32 +461,41 @@ Object Object::invoke(int line, ScriptEngine* engine, const std::vector<Object> 
     auto&& fn = *std::get<FuncPtr>(object);
     if (fn.parameters.size() != arguments.size())
         throw RuntimeError("wrong number of arguments" + at(line));
-    try {
-        ScriptScope scope(engine);
-        for (int i = 0; i < arguments.size(); ++i) {
-            auto&& parameter = fn.parameters[i];
-            auto&& argument = arguments[i];
-            if (parameter.type == Type::REAL && argument.type() == Type::INT) {
-                engine->local()[parameter.name] = argument.promote(line);
-            } else if (parameter.type == argument.type()) {
-                engine->local()[parameter.name] = argument;
-            } else {
-                throw RuntimeError("wrong type of the " + std::to_string(i + 1) + "th argument" + at(line));
-            }
-        }
-        fn.stmt->exec();
-    } catch (ScriptReturn& e) {
-        if (e.returned.type() == Type::INT && fn.returnType == Type::REAL) {
-            return e.returned.promote(e.line);
-        } else if (e.returned.type() == fn.returnType) {
-            return e.returned;
+    ScriptScope scope(engine);
+    for (int i = 0; i < arguments.size(); ++i) {
+        auto&& parameter = fn.parameters[i];
+        auto&& argument = arguments[i];
+        if (parameter.type == Type::REAL && argument.type() == Type::INT) {
+            engine->local()[parameter.name] = argument.promote(line);
+        } else if (parameter.type == argument.type()) {
+            engine->local()[parameter.name] = argument;
         } else {
-            throw RuntimeError("invalid return type" + at(e.line));
+            throw RuntimeError("wrong type of the " + std::to_string(i + 1) + "th argument" + at(line));
         }
     }
-    if (fn.returnType == Type::VOID)
-        return Object{std::monostate()};
-    throw RuntimeError("non-void function returns nothing" + at(line));
+    fn.stmt->exec();
+    switch (engine->jumpTarget) {
+        case JumpTarget::RETURN: {
+            engine->jumpTarget = JumpTarget::NONE;
+            int line = engine->jumpFrom;
+            Object returned = engine->target;
+            if (returned.type() == Type::INT && fn.returnType == Type::REAL) {
+                return returned.promote(line);
+            } else if (returned.type() == fn.returnType) {
+                return returned;
+            } else {
+                throw RuntimeError("invalid return type" + at(line));
+            }
+        }
+        case JumpTarget::THROW:
+            throw EvalInterrupted();
+        default:
+            engine->jumpTarget = JumpTarget::NONE;
+            throw RuntimeError("Wild loop jump" + at(engine->jumpFrom));
+        case JumpTarget::NONE:
+            if (fn.returnType == Type::VOID) return Object{std::monostate()};
+            else throw RuntimeError("non-void function returns nothing" + at(line));
+    }
 }
 
 }

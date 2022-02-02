@@ -23,8 +23,6 @@ struct Operator;
 struct ScriptEngine;
 struct ExprNode;
 struct StmtNode;
-struct ScriptBreak final { int line = 0; };
-struct ScriptContinue final { int line = 0; };
 
 struct SyntaxError : std::logic_error {
     SyntaxError(std::string const& msg): std::logic_error(msg) {}
@@ -101,7 +99,7 @@ constexpr Type parseType() {
     } else if constexpr(std::is_void_v<T>) {
         return Type::VOID;
     }
-    throw SyntaxError("unsupported type currently");
+    throw SyntaxError("unsupported external type");
 }
 
 struct Parameter {
@@ -176,23 +174,6 @@ struct Object {
     template<typename T>
     T as() {
         return std::get<(size_t)parseType<T>()>(object);
-    }
-};
-
-struct ScriptReturn final {
-    Object returned;
-    int line = 0;
-};
-
-struct ScriptException final : std::exception {
-    Object thrown;
-    std::string msg;
-
-    ScriptException(Object const& thrown, int line): thrown(thrown),
-        msg(std::string("Unhandled script exception '") + thrown.toString() + "' thrown" + at(line)) {}
-
-    [[nodiscard]] char const* what() const noexcept override {
-        return msg.c_str();
     }
 };
 
@@ -301,13 +282,20 @@ std::function<FuncPtr(ScriptEngine*)> external(std::function<R(Args...)> functio
 
 void installEnvironment(ScriptEngine* engine);
 
+enum class JumpTarget {
+    NONE, CONTINUE, BREAK, RETURN, THROW
+};
+
 struct ScriptEngine {
     using Scope = std::map<std::string, Object>;
-    std::deque<Scope> scopes;
+    std::deque<Scope> scopes{{}, {}};
     FILE *out, *in;
     int state = -1;
+    JumpTarget jumpTarget = JumpTarget::NONE;
+    int jumpFrom = 0;
+    Object target;
 
-    ScriptEngine(FILE* out = stdout, FILE* in = stdin): out(out), in(in), scopes{{}, {}} {
+    ScriptEngine(FILE* out = stdout, FILE* in = stdin): out(out), in(in) {
         installEnvironment(this);
     }
 
@@ -440,41 +428,50 @@ struct OpInvokeNode : ExprNode {
     }
 };
 
+struct EvalInterrupted {};
+
 struct StmtNode {
-    virtual void exec() const = 0;
+    ScriptEngine* engine;
+    StmtNode(ScriptEngine* engine): engine(engine) {}
+    void exec() const try {
+        if (engine->jumpTarget == JumpTarget::NONE)
+            do_exec();
+    } catch (EvalInterrupted) {}
+    virtual void do_exec() const = 0;
     virtual ~StmtNode() = default;
 };
 
 struct StmtNoopNode : StmtNode {
-    void exec() const override {}
+    StmtNoopNode(ScriptEngine* engine): StmtNode(engine) {}
+    void do_exec() const override {}
 };
 
 struct StmtSeqNode : StmtNode {
     std::vector<std::unique_ptr<StmtNode>> stmts;
-    StmtSeqNode(std::vector<std::unique_ptr<StmtNode>> stmts): stmts(std::move(stmts)) {}
-    void exec() const override {
+    StmtSeqNode(ScriptEngine* engine, std::vector<std::unique_ptr<StmtNode>> stmts)
+        : StmtNode(engine), stmts(std::move(stmts)) {}
+    void do_exec() const override {
         for (auto&& stmt : stmts) {
             stmt->exec();
+            if (engine->jumpTarget != JumpTarget::NONE) return;
         }
     }
 };
 
 struct StmtExprNode : StmtNode {
     std::unique_ptr<ExprNode> expr;
-    StmtExprNode(std::unique_ptr<ExprNode> expr): expr(std::move(expr)) {}
-    void exec() const override {
-        expr->eval();
-    }
+    StmtExprNode(ScriptEngine* engine, std::unique_ptr<ExprNode> expr)
+            : StmtNode(engine), expr(std::move(expr)) {}
+    void do_exec() const override { expr->eval(); }
 };
 
 struct LetNode : StmtNode {
-    ScriptEngine* engine;
     int line;
     std::unique_ptr<ExprNode> initializer;
     std::string name;
     LetNode(ScriptEngine* engine, int line, std::string name, std::unique_ptr<ExprNode> initializer)
-            : engine(engine), line(line), name(std::move(name)), initializer(std::move(initializer)) {}
-    void exec() const override {
+            : StmtNode(engine), line(line), name(std::move(name)), initializer(std::move(initializer)) {}
+    void do_exec() const override {
         if (engine->local().contains(name))
             throw RuntimeError(name + " already exists in the local scope" + at(line));
         Object val = initializer->eval().val();
@@ -484,12 +481,11 @@ struct LetNode : StmtNode {
 };
 
 struct DelNode : StmtNode {
-    ScriptEngine* engine;
     int line;
     std::string name;
     DelNode(ScriptEngine* engine, int line, std::string name)
-            : engine(engine), line(line), name(std::move(name)) {}
-    void exec() const override {
+            : StmtNode(engine), line(line), name(std::move(name)) {}
+    void do_exec() const override {
         if (!engine->local().contains(name))
             throw RuntimeError(name + " is not found in the local scope" + at(line));
         engine->local().erase(name);
@@ -497,49 +493,56 @@ struct DelNode : StmtNode {
     }
 };
 
-struct BreakNode : StmtNode {
+struct JumpNode : StmtNode {
     int line;
-    BreakNode(int line): line(line) {}
-    void exec() const override {
-        throw ScriptBreak{line};
+    JumpTarget jumpTarget;
+    JumpNode(ScriptEngine* engine, int line, JumpTarget jumpTarget)
+            : StmtNode(engine), line(line), jumpTarget(jumpTarget) {}
+    void do_exec() const override {
+        engine->jumpTarget = jumpTarget;
+        engine->jumpFrom = line;
     }
 };
 
-struct ContinueNode : StmtNode {
+struct ReturnNode : StmtNode {
     int line;
-    ContinueNode(int line): line(line) {}
-    void exec() const override {
-        throw ScriptContinue{line};
+    std::unique_ptr<ExprNode> returned;
+    ReturnNode(ScriptEngine* engine, int line, std::unique_ptr<ExprNode> returned)
+            : StmtNode(engine), line(line), returned(std::move(returned)) {}
+    void do_exec() const override {
+        engine->target = returned->eval().val();
+        engine->jumpTarget = JumpTarget::RETURN;
+        engine->jumpFrom = line;
     }
 };
 
 struct ThrowNode : StmtNode {
     int line;
     std::unique_ptr<ExprNode> thrown;
-    ThrowNode(int line, std::unique_ptr<ExprNode> thrown)
-            : line(line), thrown(std::move(thrown)) {}
-    void exec() const override {
-        throw ScriptException{thrown->eval().val(), line};
+    ThrowNode(ScriptEngine* engine, int line, std::unique_ptr<ExprNode> thrown)
+            : StmtNode(engine), line(line), thrown(std::move(thrown)) {}
+    void do_exec() const override {
+        engine->target = thrown->eval().val();
+        engine->jumpTarget = JumpTarget::THROW;
+        engine->jumpFrom = line;
     }
 };
 
 struct PrintNode : StmtNode {
-    ScriptEngine* engine;
     std::unique_ptr<ExprNode> print;
     PrintNode(ScriptEngine* engine, std::unique_ptr<ExprNode> print)
-            : engine(engine), print(std::move(print)) {}
-    void exec() const override {
+            : StmtNode(engine), print(std::move(print)) {}
+    void do_exec() const override {
         fprintf(engine->out, "%s\n", print->eval().val().toString().c_str());
     }
 };
 
 struct InputNode : StmtNode {
-    ScriptEngine* engine;
     int line;
     std::string name;
     InputNode(ScriptEngine* engine, int line, std::string name)
-            : engine(engine), line(line), name(std::move(name)) {}
-    void exec() const override {
+            : StmtNode(engine), line(line), name(std::move(name)) {}
+    void do_exec() const override {
         std::visit(overloaded {
             [this](int_t& a) { if (!fscanf(engine->in, "%lld", &a)) throw RuntimeError("illegal input as int"); },
             [this](real_t& a) { if (!fscanf(engine->in, "%lf", &a)) throw RuntimeError("illegal input as real"); },
@@ -549,52 +552,53 @@ struct InputNode : StmtNode {
     }
 };
 
-struct ReturnNode : StmtNode {
-    std::unique_ptr<ExprNode> returned;
-    int line;
-    ReturnNode(int line, std::unique_ptr<ExprNode> returned)
-        : line(line), returned(std::move(returned)) {}
-    void exec() const override {
-        throw ScriptReturn{returned->eval().val(), line};
-    }
-};
 
 struct WhileNode : StmtNode {
-    ScriptEngine* engine;
     std::unique_ptr<ExprNode> cond;
     std::unique_ptr<StmtNode> loop;
     WhileNode(ScriptEngine* engine,
               std::unique_ptr<ExprNode> cond,
               std::unique_ptr<StmtNode> loop)
-            : engine(engine), cond(std::move(cond)), loop(std::move(loop)) {}
-    void exec() const override {
+            : StmtNode(engine), cond(std::move(cond)), loop(std::move(loop)) {}
+    void do_exec() const override {
         ScriptScope scope(engine);
-        try {
-            while (cond->eval().val().asBool(cond->line))
-                try { loop->exec(); } catch (ScriptContinue&) {}
-        } catch (ScriptBreak&) {}
+        while (cond->eval().val().asBool(cond->line)) {
+            loop->exec();
+            if (engine->jumpTarget == JumpTarget::CONTINUE)
+                engine->jumpTarget = JumpTarget::NONE;
+            if (engine->jumpTarget != JumpTarget::NONE) {
+                if (engine->jumpTarget == JumpTarget::BREAK)
+                    engine->jumpTarget = JumpTarget::NONE;
+                break;
+            }
+        }
     }
 };
 
 struct RepeatNode : StmtNode {
-    ScriptEngine* engine;
     std::unique_ptr<StmtNode> loop;
     std::unique_ptr<ExprNode> cond;
     RepeatNode(ScriptEngine* engine,
                std::unique_ptr<StmtNode> loop,
                std::unique_ptr<ExprNode> cond = std::make_unique<ValNode>(0, Object{0}))
-            : engine(engine), loop(std::move(loop)), cond(std::move(cond)) {}
-    void exec() const override {
+            : StmtNode(engine), loop(std::move(loop)), cond(std::move(cond)) {}
+    void do_exec() const override {
         ScriptScope scope(engine);
-        try {
-            do try { loop->exec(); } catch (ScriptContinue&) {}
-            while (!cond->eval().val().asBool(cond->line));
-        } catch (ScriptBreak&) {}
+        do {
+            loop->exec();
+            if (engine->jumpTarget == JumpTarget::CONTINUE)
+                engine->jumpTarget = JumpTarget::NONE;
+            if (engine->jumpTarget != JumpTarget::NONE) {
+                if (engine->jumpTarget == JumpTarget::BREAK)
+                    engine->jumpTarget = JumpTarget::NONE;
+                break;
+            }
+        } while (!cond->eval().val().asBool(cond->line));
+
     }
 };
 
 struct ForNode : StmtNode {
-    ScriptEngine* engine;
     std::unique_ptr<StmtNode> init;
     std::unique_ptr<ExprNode> cond;
     std::unique_ptr<ExprNode> iter;
@@ -604,46 +608,49 @@ struct ForNode : StmtNode {
             std::unique_ptr<ExprNode> cond,
             std::unique_ptr<ExprNode> iter,
             std::unique_ptr<StmtNode> loop)
-            : engine(engine), init(std::move(init)), cond(std::move(cond)), iter(std::move(iter)), loop(std::move(loop)) {}
-    void exec() const override {
+            : StmtNode(engine), init(std::move(init)), cond(std::move(cond)), iter(std::move(iter)), loop(std::move(loop)) {}
+    void do_exec() const override {
         ScriptScope scope(engine);
-        try {
-            for(init->exec(); cond->eval().val().asBool(cond->line); iter->eval())
-                try { loop->exec(); } catch (ScriptContinue&) {}
-        } catch (ScriptBreak&) {}
+        for(init->exec(); cond->eval().val().asBool(cond->line); iter->eval()) {
+            loop->exec();
+            if (engine->jumpTarget == JumpTarget::CONTINUE)
+                engine->jumpTarget = JumpTarget::NONE;
+            if (engine->jumpTarget != JumpTarget::NONE) {
+                if (engine->jumpTarget == JumpTarget::BREAK)
+                    engine->jumpTarget = JumpTarget::NONE;
+                break;
+            }
+        }
     }
 };
 
 struct DoNode : StmtNode {
-    ScriptEngine* engine;
     std::unique_ptr<StmtNode> stmt;
     DoNode(ScriptEngine* engine,
            std::unique_ptr<StmtNode> stmt)
-            : engine(engine), stmt(std::move(stmt)) {}
-    void exec() const override {
+            : StmtNode(engine), stmt(std::move(stmt)) {}
+    void do_exec() const override {
         ScriptScope scope(engine);
         stmt->exec();
     }
 };
 
 struct IfNode : StmtNode {
-    ScriptEngine* engine;
     std::unique_ptr<ExprNode> cond;
     std::unique_ptr<StmtNode> then;
     std::unique_ptr<StmtNode> else_;
     IfNode(ScriptEngine* engine,
            std::unique_ptr<ExprNode> cond,
            std::unique_ptr<StmtNode> then,
-           std::unique_ptr<StmtNode> else_ = std::make_unique<StmtNoopNode>())
-            : engine(engine), cond(std::move(cond)), then(std::move(then)), else_(std::move(else_)) {}
-    void exec() const override {
+           std::unique_ptr<StmtNode> else_)
+            : StmtNode(engine), cond(std::move(cond)), then(std::move(then)), else_(std::move(else_)) {}
+    void do_exec() const override {
         ScriptScope scope(engine);
         if (cond->eval().val().asBool(cond->line)) then->exec(); else else_->exec();
     }
 };
 
 struct TryNode : StmtNode {
-    ScriptEngine* engine;
     std::unique_ptr<StmtNode> try_;
     std::string name;
     std::unique_ptr<StmtNode> catch_;
@@ -651,14 +658,18 @@ struct TryNode : StmtNode {
             std::unique_ptr<StmtNode> try_,
             std::string name,
             std::unique_ptr<StmtNode> catch_)
-            : engine(engine), try_(std::move(try_)), name(std::move(name)), catch_(std::move(catch_)) {}
-    void exec() const override try {
-        ScriptScope scope(engine);
-        try_->exec();
-    } catch (ScriptException& e) {
-        ScriptScope scope(engine);
-        engine->local()[name] = {e.thrown};
-        catch_->exec();
+            : StmtNode(engine), try_(std::move(try_)), name(std::move(name)), catch_(std::move(catch_)) {}
+    void do_exec() const override {
+        {
+            ScriptScope scope(engine);
+            try_->exec();
+        }
+        if (engine->jumpTarget == JumpTarget::THROW) {
+            engine->jumpTarget = JumpTarget::NONE;
+            ScriptScope scope(engine);
+            engine->local()[name] = engine->target;
+            catch_->exec();
+        }
     }
 };
 
@@ -754,10 +765,10 @@ std::vector<Parameter> externalParameters(std::index_sequence<I...>) {
 }
 
 template<typename R, typename... Args>
-struct ExternalFunctionNode : ExprNode {
+struct ExternalFunctionInvocationNode : ExprNode {
     ScriptEngine* engine;
     std::function<R(Args...)> function;
-    ExternalFunctionNode(ScriptEngine* engine, std::function<R(Args...)> function)
+    ExternalFunctionInvocationNode(ScriptEngine* engine, std::function<R(Args...)> function)
             : ExprNode(0), engine(engine), function(function) {}
     Operand eval() const override {
         return eval(std::index_sequence_for<Args...>());
@@ -773,13 +784,13 @@ std::function<FuncPtr(ScriptEngine*)> external(std::function<R(Args...)> functio
     static_assert((!sizeof...(Args) || ... || !std::is_reference_v<Args>));
     return [function](ScriptEngine* engine) {
         return std::make_shared<Function>(Function{parseType<R>(), externalParameters<Args...>(std::index_sequence_for<Args...>()),
-                std::make_unique<ReturnNode>(0, std::make_unique<ExternalFunctionNode<R, Args...>>(engine, function))});
+                std::make_unique<ReturnNode>(engine, 0, std::make_unique<ExternalFunctionInvocationNode<R, Args...>>(engine, function))});
     };
 }
 
 template<typename R, typename... Args>
 template<size_t... I>
-Operand ExternalFunctionNode<R, Args...>::eval(std::index_sequence<I...>) const {
+Operand ExternalFunctionInvocationNode<R, Args...>::eval(std::index_sequence<I...>) const {
     if constexpr(std::is_void_v<R>) {
         function(engine->findOperand(externalParameterName<I>(), 0).val().template as<Args>()...);
         return Object{std::monostate()};

@@ -174,6 +174,7 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("sqrt",     ::sqrt);
     engine->installExternalFunction("cbrt",     ::cbrt);
     engine->installExternalFunction("hypot",    ::hypot);
+    engine->installExternalFunction("hypot3",   (real_t(*)(real_t, real_t, real_t))std::hypot);
 
     engine->installExternalFunction("sin",      ::sin);
     engine->installExternalFunction("cos",      ::cos);
@@ -225,7 +226,7 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("rand",     ::rand);
     engine->global()["RAND_MAX"]        = {RAND_MAX};
 
-    engine->installExternalFunction("counter",  [i = 0]() mutable { return i++; });
+    engine->installExternalFunction("counter",  [i = 0LL]() mutable { return i++; });
 
     engine->installExternalFunction("void",     []{});
 
