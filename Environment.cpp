@@ -202,9 +202,9 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("fmidpoint",(real_t(*)(real_t, real_t))std::midpoint);
     engine->installExternalFunction("lerp",     (real_t(*)(real_t, real_t, real_t))std::lerp);
 
-    engine->installExternalFunction("time",     [] { return ::time(nullptr); });
-    engine->installExternalFunction("clock",    ::clock);
     engine->installExternalFunction("nanos",    [] { return std::chrono::system_clock::now().time_since_epoch().count(); });
+    engine->installExternalFunction("micros",    [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000; });
+    engine->installExternalFunction("millis",    [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000'000; });
 
     {
         using namespace std::numbers;
@@ -226,7 +226,7 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("rand",     ::rand);
     engine->global()["RAND_MAX"]        = {RAND_MAX};
 
-    engine->installExternalFunction("counter",  [i = 0LL]() mutable { return i++; });
+    engine->installExternalFunction("counter",  [i = int_t()]() mutable { return i++; });
 
     engine->installExternalFunction("void",     []{});
 

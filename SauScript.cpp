@@ -186,12 +186,6 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatement(std::vector<Token> toke
     if (auto&& first = tokens[0]; first.type == TokenType::KEYWORD) {
         using namespace Keyword;
         switch (first.keyword()) {
-            case DEL:
-                if (tokens.size() == 2 && tokens[1].type == TokenType::IDENTIFIER) {
-                    return std::make_unique<DelNode>(this, first.line, tokens[1].identifier());
-                } else {
-                    throw SyntaxError("bad del statement" + first.at());
-                }
             case LET:
                 if (tokens.size() >= 3 && tokens[1].type == TokenType::IDENTIFIER
                     && tokens[2] == Token::punctuation("=")) {

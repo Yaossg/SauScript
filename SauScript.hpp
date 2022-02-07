@@ -261,10 +261,10 @@ inline std::vector<std::string_view> const& opTokens() {
 
 namespace Keyword {
 const std::string_view KW_TOKENS[] =
-        {"let", "del", "while", "do", "end", "if", "else", "elif", "then", "try", "catch",
+        {"let", "while", "do", "end", "if", "else", "elif", "then", "try", "catch",
          "until", "repeat", "break", "continue", "for", "throw", "input", "print", "return", "function"};
 enum {
-    LET, DEL, WHILE, DO, END, IF, ELSE, ELIF, THEN, TRY, CATCH,
+    LET, WHILE, DO, END, IF, ELSE, ELIF, THEN, TRY, CATCH,
     UNTIL, REPEAT, BREAK, CONTINUE, FOR, THROW, INPUT, PRINT, RETURN, FUNCTION,
 
     NAK // not a keyword
@@ -290,7 +290,6 @@ struct ScriptEngine {
     using Scope = std::map<std::string, Object>;
     std::deque<Scope> scopes{{}, {}};
     FILE *out, *in;
-    int state = -1;
     JumpTarget jumpTarget = JumpTarget::NONE;
     int jumpFrom = 0;
     Object target;
@@ -329,26 +328,28 @@ struct ScriptScope {
     ScriptEngine* engine;
     ScriptScope(ScriptEngine* engine): engine(engine) {
         engine->scopes.emplace_back();
-        ++engine->state;
     }
     ~ScriptScope() {
         engine->scopes.pop_back();
-        ++engine->state;
     }
 };
 
 struct ExprNode {
     int line;
-    ExprNode(int line): line(line) {}
-    virtual Operand eval() const = 0;
+    mutable std::optional<Operand> cache;
+    ExprNode(int line, std::optional<Operand> cache = std::nullopt): line(line), cache(std::move(cache)) {}
+    Operand eval() const {
+        if (cache.has_value()) return cache.value();
+        return do_eval();
+    }
+    virtual Operand do_eval() const = 0;
     virtual ~ExprNode() = default;
 };
 
 struct ValNode : ExprNode {
-    Object val;
-    ValNode(int line, Object val): ExprNode(line), val(std::move(val)) {}
-    Operand eval() const override {
-        return val;
+    ValNode(int line, Object val): ExprNode(line, val) {}
+    Operand do_eval() const override {
+        throw RuntimeError("Assertion failed");
     }
 };
 
@@ -357,14 +358,8 @@ struct RefNode : ExprNode {
     std::string name;
     RefNode(ScriptEngine* engine, int line, std::string name): engine(engine), ExprNode(line), name(std::move(name)) {}
 
-    mutable int state = -1;
-    mutable std::optional<Operand> cache;
-
-    Operand eval() const override {
-        if (!cache.has_value() || state != engine->state) {
-            cache = engine->findOperand(name, line);
-            state = engine->state;
-        }
+    Operand do_eval() const override {
+        cache = engine->findOperand(name, line);
         return cache.value();
     }
 };
@@ -377,7 +372,7 @@ struct OpUnaryNode : ExprNode {
                 Operator const* op): ExprNode(line),
                         operand(std::move(lhs)), op(op) {}
 
-    Operand eval() const override {
+    Operand do_eval() const override {
         return op->asUnary()(operand.get());
     }
 };
@@ -391,7 +386,7 @@ struct OpBinaryNode : ExprNode {
                  Operator const* op): ExprNode(line),
                  lhs(std::move(lhs)), rhs(std::move(rhs)), op(op) {}
 
-    Operand eval() const override {
+    Operand do_eval() const override {
         return op->asBinary()(lhs.get(), rhs.get());
     }
 };
@@ -404,7 +399,7 @@ struct OpTernaryNode : ExprNode {
                   std::unique_ptr<ExprNode> rhs): ExprNode(line),
                   cond(std::move(cond)), lhs(std::move(lhs)), rhs(std::move(rhs)) {}
 
-    Operand eval() const override {
+    Operand do_eval() const override {
         return cond->eval().val().asBool(line) ? lhs->eval() : rhs->eval();
     }
 };
@@ -419,7 +414,7 @@ struct OpInvokeNode : ExprNode {
                  std::vector<std::unique_ptr<ExprNode>> args): ExprNode(line),
                  func(std::move(func)), engine(engine), args(std::move(args)) {}
 
-    Operand eval() const override {
+    Operand do_eval() const override {
         std::vector<Object> objects;
         for (auto&& arg : args) {
             objects.push_back(arg->eval().val());
@@ -476,20 +471,6 @@ struct LetNode : StmtNode {
             throw RuntimeError(name + " already exists in the local scope" + at(line));
         Object val = initializer->eval().val();
         engine->local()[name] = val;
-        ++engine->state;
-    }
-};
-
-struct DelNode : StmtNode {
-    int line;
-    std::string name;
-    DelNode(ScriptEngine* engine, int line, std::string name)
-            : StmtNode(engine), line(line), name(std::move(name)) {}
-    void do_exec() const override {
-        if (!engine->local().contains(name))
-            throw RuntimeError(name + " is not found in the local scope" + at(line));
-        engine->local().erase(name);
-        ++engine->state;
     }
 };
 
@@ -770,7 +751,7 @@ struct ExternalFunctionInvocationNode : ExprNode {
     std::function<R(Args...)> function;
     ExternalFunctionInvocationNode(ScriptEngine* engine, std::function<R(Args...)> function)
             : ExprNode(0), engine(engine), function(function) {}
-    Operand eval() const override {
+    Operand do_eval() const override {
         return eval(std::index_sequence_for<Args...>());
     }
 
