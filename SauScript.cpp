@@ -13,65 +13,80 @@ namespace SauScript {
             tokens.push_back(Token::linebreak());
         } else if (std::isspace(ch)) {
             ++source;
-        } else if (ch == '(') {
-            tokens.push_back(Token::parenLeft().at(line));
-            ++source;
-        } else if (ch == ')') {
-            tokens.push_back(Token::parenRight().at(line));
-            ++source;
-        } else if (ch == '?' || ch == ':' || ch == ',') {
-            tokens.push_back(Token::punctuation({ch}).at(line));
-            ++source;
-        } else if (isIdentifierStart(ch)) {
-            char const* first = source;
-            while (isIdentifierContinue(*++source));
-            std::string token{first, source};
-            if (token == "false") {
-                tokens.push_back(Token::literal_bool(false).at(line));
-            } else if (token == "true") {
-                tokens.push_back(Token::literal_bool(true).at(line));
-            } else if (token == "__LINE__") {
-                tokens.push_back(Token::literal_int(line).at(line));
-            } else if (token == "nan") {
-                tokens.push_back(Token::literal_real(0.0 / 0.0).at(line));
-            } else if (token == "inf") {
-                tokens.push_back(Token::literal_real(1.0 / 0.0).at(line));
-            } else if (auto kw = Keyword::parse(token); kw != Keyword::NAK) {
-                tokens.push_back(Token::keyword(kw).at(line));
-            } else if (auto&& ops = opTokens(); std::find(ops.begin(), ops.end(), token) != ops.end()) {
-                tokens.push_back(Token::punctuation(token).at(line));
-            } else {
-                tokens.push_back(Token::identifier(token).at(line));
-            }
-        } else if (isNumberStart(ch)) {
-            try {
-                size_t idx;
-                auto x = std::stoll(source, &idx, 0);
-                if (source[idx] != '.' && source[idx] != 'e' && source[idx] != 'E') {
-                    tokens.push_back(Token::literal_int(x).at(line));
-                    source += idx;
-                    continue;
-                }
-            } catch (...) {}
-            try {
-                size_t idx;
-                tokens.push_back(Token::literal_real(std::stod(source, &idx)).at(line));
-                source += idx;
-            } catch (...) {
-                throw RuntimeError("invalid literal number" + at(line));
-            }
         } else {
-            std::string token;
-            for (auto&& op : opTokens()) {
-                if (std::string_view{source}.starts_with(op)) {
-                    if (op.length() > token.length()) token = op;
-                }
+            switch (ch) {
+                case '(':
+                    tokens.push_back(Token::parenLeft().at(line));
+                    ++source;
+                    continue;
+                case ')':
+                    tokens.push_back(Token::parenRight().at(line));
+                    ++source;
+                    continue;
+                case '{':
+                    tokens.push_back(Token::braceLeft().at(line));
+                    ++source;
+                    continue;
+                case '}':
+                    tokens.push_back(Token::braceRight().at(line));
+                    ++source;
+                    continue;
+                case '?': case ':': case ',':
+                    tokens.push_back(Token::punctuation({ch}).at(line));
+                    ++source;
+                    continue;
             }
-            if (!token.empty()) {
-                tokens.push_back(Token::punctuation(token).at(line));
-                source += token.length();
+            if (isIdentifierStart(ch)) {
+                char const *first = source;
+                while (isIdentifierContinue(*++source));
+                std::string token{first, source};
+                if (token == "false") {
+                    tokens.push_back(Token::literal_bool(false).at(line));
+                } else if (token == "true") {
+                    tokens.push_back(Token::literal_bool(true).at(line));
+                } else if (token == "__LINE__") {
+                    tokens.push_back(Token::literal_int(line).at(line));
+                } else if (token == "nan") {
+                    tokens.push_back(Token::literal_real(0.0 / 0.0).at(line));
+                } else if (token == "inf") {
+                    tokens.push_back(Token::literal_real(1.0 / 0.0).at(line));
+                } else if (auto kw = Keyword::parse(token); kw != Keyword::NAK) {
+                    tokens.push_back(Token::keyword(kw).at(line));
+                } else if (auto &&ops = opTokens(); std::find(ops.begin(), ops.end(), token) != ops.end()) {
+                    tokens.push_back(Token::punctuation(token).at(line));
+                } else {
+                    tokens.push_back(Token::identifier(token).at(line));
+                }
+            } else if (isNumberStart(ch)) {
+                try {
+                    size_t idx;
+                    auto x = std::stoll(source, &idx, 0);
+                    if (source[idx] != '.' && source[idx] != 'e' && source[idx] != 'E') {
+                        tokens.push_back(Token::literal_int(x).at(line));
+                        source += idx;
+                        continue;
+                    }
+                } catch (...) {}
+                try {
+                    size_t idx;
+                    tokens.push_back(Token::literal_real(std::stod(source, &idx)).at(line));
+                    source += idx;
+                } catch (...) {
+                    throw RuntimeError("invalid literal number" + at(line));
+                }
             } else {
-                throw SyntaxError("unexpected token" + at(line));
+                std::string token;
+                for (auto &&op: opTokens()) {
+                    if (std::string_view{source}.starts_with(op)) {
+                        if (op.length() > token.length()) token = op;
+                    }
+                }
+                if (!token.empty()) {
+                    tokens.push_back(Token::punctuation(token).at(line));
+                    source += token.length();
+                } else {
+                    throw SyntaxError("unexpected token" + at(line));
+                }
             }
         }
     }
@@ -242,101 +257,97 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatement(std::vector<Token> toke
 std::unique_ptr<StmtNode> ScriptEngine::compileWhile(Token*& current) {
     using namespace Keyword;
     Token* first = ++current;
-    while (*current != Token::keyword(DO)) {
-        if (current->type == TokenType::EOT) throw SyntaxError("missing do in while" + first->at());
+    while (*current != Token::braceLeft()) {
+        if (current->type == TokenType::EOT) throw SyntaxError("missing '{' in while" + first->at());
         ++current;
     }
     auto cond = compileExpression({first, current});
     auto stmt = compileStatements(++current);
-    if (*current != Token::keyword(END)) throw SyntaxError("missing end in while" + current->at());
+    if (*current != Token::braceRight()) throw SyntaxError("missing '}' in while" + current->at());
     return std::make_unique<WhileNode>(this, std::move(cond), std::move(stmt));
 }
 
-std::unique_ptr<StmtNode> ScriptEngine::compileRepeat(Token*& current) {
+std::unique_ptr<StmtNode> ScriptEngine::compileDoWhile(Token*& current) {
     using namespace Keyword;
+    if (*++current != Token::braceLeft()) throw SyntaxError("missing '{' in do-while" + current->at());
     auto stmt = compileStatements(++current);
-    if (current->type == TokenType::KEYWORD)
-        switch (current->keyword()) {
-            case END:
-                return std::make_unique<RepeatNode>(this, std::move(stmt));
-            case UNTIL: {
-                Token* first = ++current;
-                while (*current != Token::keyword(END)) {
-                    if (current->type == TokenType::EOT) throw SyntaxError("missing end in repeat" + current->at());
-                    ++current;
-                }
-                return std::make_unique<RepeatNode>(this, std::move(stmt), compileExpression({first, current}));
-            }
-        }
-    throw SyntaxError("end or until is expected" + current->at());
+    if (*current != Token::braceRight()) throw SyntaxError("missing '}' in do-while" + current->at());
+    if (*++current != Token::keyword(WHILE)) throw SyntaxError("missing 'while' in do-while" + current->at());
+    Token* first = ++current;
+    while (*current != Token::linebreak()) {
+        if (current->type == TokenType::EOT) throw SyntaxError("incomplete condition in do-while" + current->at());
+        ++current;
+    }
+    return std::make_unique<DoWhileNode>(this, std::move(stmt), compileExpression({first, current}));
 }
 
 std::unique_ptr<StmtNode> ScriptEngine::compileFor(Token*& current) {
     using namespace Keyword;
     Token* first = ++current;
     while (*current != Token::linebreak()) {
-        if (current->type == TokenType::EOT) throw SyntaxError("missing first linebreak in for" + first->at());
+        if (current->type == TokenType::EOT) throw SyntaxError("incomplete init in for" + first->at());
         ++current;
     }
     auto init = compileStatement({first, current});
     first = ++current;
     while (*current != Token::linebreak()) {
-        if (current->type == TokenType::EOT) throw SyntaxError("missing second linebreak in for" + first->at());
+        if (current->type == TokenType::EOT) throw SyntaxError("incomplete cond in for" + first->at());
         ++current;
     }
     auto cond = compileExpression({first, current});
     first = ++current;
-    while (*current != Token::keyword(DO)) {
-        if (current->type == TokenType::EOT) throw SyntaxError("missing do in for" + first->at());
+    while (*current != Token::braceLeft()) {
+        if (current->type == TokenType::EOT) throw SyntaxError("missing '{' in for" + first->at());
         ++current;
     }
     auto iter = compileExpression({first, current});
     auto stmt = compileStatements(++current);
-    if (*current != Token::keyword(END)) throw SyntaxError("missing end in for" + current->at());
+    if (*current != Token::braceRight()) throw SyntaxError("missing '}' in for" + current->at());
     return std::make_unique<ForNode>(this, std::move(init), std::move(cond), std::move(iter), std::move(stmt));
 }
 
-std::unique_ptr<StmtNode> ScriptEngine::compileDo(Token*& current) {
+std::unique_ptr<StmtNode> ScriptEngine::compileBrace(Token*& current) {
     using namespace Keyword;
     auto stmt = compileStatements(++current);
-    if (*current != Token::keyword(END)) throw SyntaxError("missing end in do" + current->at());
-    return std::make_unique<DoNode>(this, std::move(stmt));
+    if (*current != Token::braceRight()) throw SyntaxError("missing '}' in '{'" + current->at());
+    return std::make_unique<BraceNode>(this, std::move(stmt));
 }
 
 std::unique_ptr<StmtNode> ScriptEngine::compileIf(Token*& current) {
     using namespace Keyword;
     Token* first = ++current;
-    while (*current != Token::keyword(THEN)) {
-        if (current->type == TokenType::EOT) throw SyntaxError("missing then in if" + first->at());
+    while (*current != Token::braceLeft()) {
+        if (current->type == TokenType::EOT) throw SyntaxError("missing '{' in if" + first->at());
         ++current;
     }
     auto cond = compileExpression({first, current});
     auto then = compileStatements(++current);
-    if (current->type == TokenType::KEYWORD)
-        switch (current->keyword()) {
-            case END:
-                return std::make_unique<IfNode>(this, std::move(cond), std::move(then), std::make_unique<StmtNoopNode>(this));
-            case ELSE: {
-                auto else_ = compileStatements(++current);
-                if (*current != Token::keyword(END)) throw SyntaxError("missing end in if" + current->at());
-                return std::make_unique<IfNode>(this, std::move(cond), std::move(then), std::move(else_));
-            }
-            case ELIF: {
-                *current = Token::keyword(IF).at(current->line);
-                return std::make_unique<IfNode>(this, std::move(cond), std::move(then), compileIf(current));
-            }
+    if (*current != Token::braceRight()) throw SyntaxError("missing '}' in if" + current->at());
+    std::unique_ptr<StmtNode> else_ = std::make_unique<StmtNoopNode>(this);
+    if (current[1] == Token::keyword(ELSE)) {
+        current += 2;
+        if (*current == Token::keyword(IF)) {
+            else_ = compileIf(current);
+        } else {
+            if (*current != Token::braceLeft()) throw SyntaxError("missing '{' in else" + current->at());
+            else_ = compileStatements(++current);
+            if (*current != Token::braceRight()) throw SyntaxError("missing '}' in else" + current->at());
         }
-    throw SyntaxError("end, else or elif is expected" + current->at());
+    }
+    return std::make_unique<IfNode>(this, std::move(cond), std::move(then), std::move(else_));
 }
 
 std::unique_ptr<StmtNode> ScriptEngine::compileTry(Token*& current) {
     using namespace Keyword;
+    if (*++current != Token::braceLeft()) throw SyntaxError("missing '{' in try" + current->at());
     auto try_ = compileStatements(++current);
-    if (*current != Token::keyword(CATCH)) throw SyntaxError("missing catch" + current->at());
+    if (*current != Token::braceRight()) throw SyntaxError("missing '}' in try" + current->at());
+    if (*++current != Token::keyword(CATCH)) throw SyntaxError("missing catch in try" + current->at());
     if ((++current)->type != TokenType::IDENTIFIER) throw SyntaxError("missing catch identifier" + current->at());
     auto name = current->identifier();
+    if (*++current != Token::braceLeft()) throw SyntaxError("missing '{' in catch" + current->at());
     auto catch_ = compileStatements(++current);
-    if (*current != Token::keyword(END)) throw SyntaxError("missing end in try" + current->at());
+    if (*current != Token::braceRight()) throw SyntaxError("missing end in try" + current->at());
     return std::make_unique<TryNode>(this, std::move(try_), name, std::move(catch_));
 }
 
@@ -369,9 +380,9 @@ std::unique_ptr<StmtNode> ScriptEngine::compileFunction(Token*& current) {
         auto expr = compileExpression(++current);
         stmt = std::make_unique<ReturnNode>(this, expr->line, std::move(expr));
     } else {
-        stmt = compileStatements(current);
-        if (*current != Token::keyword(Keyword::END))
-            throw SyntaxError("missing end in function" + current->at());
+        if (*current != Token::braceLeft()) throw SyntaxError("missing '{' in function" + current->at());
+        stmt = compileStatements(++current);
+        if (*current != Token::braceRight()) throw SyntaxError("missing '}' in function" + current->at());
     }
     return std::make_unique<LetNode>(this, line, name, std::make_unique<ValNode>(
             line, Object{std::make_shared<Function>(Function{return_type, parameters, std::move(stmt)})}));
@@ -389,14 +400,11 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatements(Token*& current) {
                     case WHILE:
                         stmts.push_back(compileWhile(current));
                         continue;
-                    case REPEAT:
-                        stmts.push_back(compileRepeat(current));
+                    case DO:
+                        stmts.push_back(compileDoWhile(current));
                         continue;
                     case FOR:
                         stmts.push_back(compileFor(current));
-                        continue;
-                    case DO:
-                        stmts.push_back(compileDo(current));
                         continue;
                     case IF:
                         stmts.push_back(compileIf(current));
@@ -407,17 +415,19 @@ std::unique_ptr<StmtNode> ScriptEngine::compileStatements(Token*& current) {
                     case FUNCTION:
                         stmts.push_back(compileFunction(current));
                         continue;
-                    case END:
-                    case ELSE:
-                    case ELIF:
-                    case CATCH:
-                    case UNTIL:
-                        goto outer;
                 }
                 break;
             case TokenType::LINEBREAK:
                 stmts.push_back(compileStatement(line));
                 line.clear();
+                continue;
+            case TokenType::BRACE:
+                stmts.push_back(compileStatement(line));
+                line.clear();
+                if (*current == Token::braceRight())
+                    goto outer;
+                else
+                    stmts.push_back(compileBrace(current));
                 continue;
         }
         line.push_back(*current);

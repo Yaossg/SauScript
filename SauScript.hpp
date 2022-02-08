@@ -261,11 +261,11 @@ inline std::vector<std::string_view> const& opTokens() {
 
 namespace Keyword {
 const std::string_view KW_TOKENS[] =
-        {"let", "while", "do", "end", "if", "else", "elif", "then", "try", "catch",
-         "until", "repeat", "break", "continue", "for", "throw", "input", "print", "return", "function"};
+        {"let", "while", "do", "if", "else", "try", "catch",
+         "break", "continue", "for", "throw", "input", "print", "return", "function"};
 enum {
-    LET, WHILE, DO, END, IF, ELSE, ELIF, THEN, TRY, CATCH,
-    UNTIL, REPEAT, BREAK, CONTINUE, FOR, THROW, INPUT, PRINT, RETURN, FUNCTION,
+    LET, WHILE, DO, IF, ELSE, TRY, CATCH,
+    BREAK, CONTINUE, FOR, THROW, INPUT, PRINT, RETURN, FUNCTION,
 
     NAK // not a keyword
 };
@@ -312,9 +312,9 @@ struct ScriptEngine {
     [[nodiscard]] std::unique_ptr<ExprNode> compileExpression(std::vector<Token> tokens);
     [[nodiscard]] std::unique_ptr<StmtNode> compileStatement(std::vector<Token> tokens);
     [[nodiscard]] std::unique_ptr<StmtNode> compileWhile(Token*& current);
-    [[nodiscard]] std::unique_ptr<StmtNode> compileRepeat(Token*& current);
+    [[nodiscard]] std::unique_ptr<StmtNode> compileDoWhile(Token*& current);
     [[nodiscard]] std::unique_ptr<StmtNode> compileFor(Token*& current);
-    [[nodiscard]] std::unique_ptr<StmtNode> compileDo(Token*& current);
+    [[nodiscard]] std::unique_ptr<StmtNode> compileBrace(Token*& current);
     [[nodiscard]] std::unique_ptr<StmtNode> compileIf(Token*& current);
     [[nodiscard]] std::unique_ptr<StmtNode> compileTry(Token*& current);
     [[nodiscard]] std::unique_ptr<StmtNode> compileFunction(Token*& current);
@@ -336,10 +336,8 @@ struct ScriptScope {
 
 struct ExprNode {
     int line;
-    mutable std::optional<Operand> cache;
-    ExprNode(int line, std::optional<Operand> cache = std::nullopt): line(line), cache(std::move(cache)) {}
+    ExprNode(int line): line(line) {}
     Operand eval() const {
-        if (cache.has_value()) return cache.value();
         return do_eval();
     }
     virtual Operand do_eval() const = 0;
@@ -347,9 +345,10 @@ struct ExprNode {
 };
 
 struct ValNode : ExprNode {
-    ValNode(int line, Object val): ExprNode(line, val) {}
+    Object val;
+    ValNode(int line, Object val): ExprNode(line), val(val) {}
     Operand do_eval() const override {
-        throw RuntimeError("Assertion failed");
+        return val;
     }
 };
 
@@ -359,8 +358,7 @@ struct RefNode : ExprNode {
     RefNode(ScriptEngine* engine, int line, std::string name): engine(engine), ExprNode(line), name(std::move(name)) {}
 
     Operand do_eval() const override {
-        cache = engine->findOperand(name, line);
-        return cache.value();
+        return engine->findOperand(name, line);
     }
 };
 
@@ -556,12 +554,12 @@ struct WhileNode : StmtNode {
     }
 };
 
-struct RepeatNode : StmtNode {
+struct DoWhileNode : StmtNode {
     std::unique_ptr<StmtNode> loop;
     std::unique_ptr<ExprNode> cond;
-    RepeatNode(ScriptEngine* engine,
-               std::unique_ptr<StmtNode> loop,
-               std::unique_ptr<ExprNode> cond = std::make_unique<ValNode>(0, Object{0}))
+    DoWhileNode(ScriptEngine* engine,
+                std::unique_ptr<StmtNode> loop,
+                std::unique_ptr<ExprNode> cond)
             : StmtNode(engine), loop(std::move(loop)), cond(std::move(cond)) {}
     void do_exec() const override {
         ScriptScope scope(engine);
@@ -574,8 +572,7 @@ struct RepeatNode : StmtNode {
                     engine->jumpTarget = JumpTarget::NONE;
                 break;
             }
-        } while (!cond->eval().val().asBool(cond->line));
-
+        } while (cond->eval().val().asBool(cond->line));
     }
 };
 
@@ -605,10 +602,10 @@ struct ForNode : StmtNode {
     }
 };
 
-struct DoNode : StmtNode {
+struct BraceNode : StmtNode {
     std::unique_ptr<StmtNode> stmt;
-    DoNode(ScriptEngine* engine,
-           std::unique_ptr<StmtNode> stmt)
+    BraceNode(ScriptEngine* engine,
+              std::unique_ptr<StmtNode> stmt)
             : StmtNode(engine), stmt(std::move(stmt)) {}
     void do_exec() const override {
         ScriptScope scope(engine);
@@ -656,7 +653,7 @@ struct TryNode : StmtNode {
 
 enum class TokenType {
     PUNCTUATION, IDENTIFIER, KEYWORD, PAREN, LINEBREAK,
-    LITERAL_BOOL, LITERAL_INT, LITERAL_REAL,
+    LITERAL_BOOL, LITERAL_INT, LITERAL_REAL, BRACE,
 
     EOT // end of token
 };
@@ -716,6 +713,12 @@ struct Token {
     }
     static Token parenRight() {
         return {TokenType::PAREN, 1};
+    }
+    static Token braceLeft() {
+        return {TokenType::BRACE, 0};
+    }
+    static Token braceRight() {
+        return {TokenType::BRACE, 1};
     }
     static Token linebreak() {
         return {TokenType::LINEBREAK, 0};
