@@ -62,6 +62,45 @@ auto intAssignment(char const* name, Fn fn, Assertion* an = noop_assert) {
 
 const std::vector<Operator> OPERATORS[13] = {
         {
+                {"print", [](ExprNode* rhs) -> Operand {
+                    fprintf(rhs->engine->out, "%s\n", rhs->eval().val().toString().c_str());
+                    return {};
+                }},
+                {"input", [](ExprNode* rhs) -> Operand {
+                    std::visit(overloaded {
+                            [engine = rhs->engine](int_t& a) { if (!fscanf(engine->in, "%lld", &a)) throw RuntimeError("illegal input as int"); },
+                            [engine = rhs->engine](real_t& a) { if (!fscanf(engine->in, "%lf", &a)) throw RuntimeError("illegal input as real"); },
+                            [line = rhs->line](FuncPtr& a) { throw RuntimeError("attempt to input a function" + at(line)); },
+                            [line = rhs->line](std::monostate& a) { throw RuntimeError("attempt to input void" + at(line)); }
+                    }, rhs->eval().ref(rhs->line)->object);
+                    return {};
+                }},
+                {"throw", [](ExprNode* rhs) -> Operand {
+                    auto* engine = rhs->engine;
+                    engine->target = rhs->eval().val();
+                    engine->jumpTarget = JumpTarget::THROW;
+                    engine->jumpFrom = rhs->line;
+                    throw Interruption{};
+                }},
+                {"yield", [](ExprNode* rhs) -> Operand {
+                    auto* engine = rhs->engine;
+                    engine->target = rhs->eval().val();
+                    engine->jumpTarget = JumpTarget::BREAK;
+                    engine->jumpFrom = rhs->line;
+                    throw Interruption{};
+                }},
+                {"return", [](ExprNode* rhs) -> Operand {
+                    auto* engine = rhs->engine;
+                    engine->target = rhs->eval().val();
+                    engine->jumpTarget = JumpTarget::RETURN;
+                    engine->jumpFrom = rhs->line;
+                    throw Interruption{};
+                }},
+                {":=", [](ExprNode* lhs, ExprNode* rhs) -> Operand {
+                    if (auto* ref = dynamic_cast<RefNode*>(lhs))
+                        return ref->initialize(rhs);
+                    throw RuntimeError("initialization cannot be applied to an expression");
+                }},
                 {"=",  simpleAssignment([](auto* lhs, auto* rhs) { *lhs = *rhs; })},
                 {"+=", simpleAssignment([](auto* lhs, auto* rhs) { *lhs += *rhs; })},
                 {"-=", simpleAssignment([](auto* lhs, auto* rhs) { *lhs -= *rhs; })},
@@ -227,8 +266,6 @@ void installEnvironment(ScriptEngine* engine) {
     engine->global()["RAND_MAX"]        = {RAND_MAX};
 
     engine->installExternalFunction("counter",  [i = int_t()]() mutable { return i++; });
-
-    engine->installExternalFunction("void",     []{});
 
     engine->global()["__cplusplus"]     = {__cplusplus};
 }

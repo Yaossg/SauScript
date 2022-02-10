@@ -71,3 +71,15 @@ RefNode 缓存优化
 repeat until 改为 do while
 
 elif 改为 else if
+
+## v1.2
+
+let 变为 :=
+
+return throw input print 变为运算符
+
+break continue function if-else try-catch while do-while for {} 变为表达式
+
+void() 变为 {}
+
+加入 yield 运算符
