@@ -83,3 +83,10 @@ break continue function if-else try-catch while do-while for {} 变为表达式
 void() 变为 {}
 
 加入 yield 运算符
+
+### v1.2.1
+
+加入重现脚本和绘制语法树支持
+
+优化字符串化和代码结构
+

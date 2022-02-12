@@ -19,7 +19,13 @@ void file() {
         fgets(line, sizeof line, fp);
         script += line;
     } while (!feof(fp));
+    puts("source code: ");
     puts(script.c_str());
+    auto compiled = engine.compile(script.c_str());
+    puts("dump code: ");
+    puts(compiled->toString().c_str());
+    puts("syntax tree: ");
+    puts(compiled->walk().c_str());
     engine.exec(script.c_str());
 }
 

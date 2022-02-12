@@ -100,60 +100,61 @@ Operand ScriptEngine::findOperand(const std::string& name, int line) {
 }
 
 std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level = 0) {
-    if (level >= 13) {
-        auto token = *current++;
-        switch (token.type) {
-            case TokenType::LITERAL_BOOL:
-                return std::make_unique<ValNode>(this, token.line, Object{token.literal_bool()});
-            case TokenType::LITERAL_INT:
-                return std::make_unique<ValNode>(this, token.line, Object{token.literal_int()});
-            case TokenType::LITERAL_REAL:
-                return std::make_unique<ValNode>(this, token.line, Object{token.literal_real()});
-            case TokenType::IDENTIFIER:
-                return std::make_unique<RefNode>(this, token.line, token.identifier());
-            case TokenType::KEYWORD: {
-                using namespace Keyword;
-                switch (token.keyword()) {
-                    case FUNCTION:
-                        return compileFunction(current);
-                    case FOR:
-                        return compileFor(current);
-                    case WHILE:
-                        return compileWhile(current);
-                    case DO:
-                        return compileDoWhile(current);
-                    case IF:
-                        return compileIfElse(current);
-                    case TRY:
-                        return compileTry(current);
-                    case BREAK:
-                        return std::make_unique<JumpNode>(this, token.line, JumpTarget::BREAK);
-                    case CONTINUE:
-                        return std::make_unique<JumpNode>(this, token.line, JumpTarget::CONTINUE);
-                    case CATCH:
-                        throw SyntaxError("stray catch" + at(token.line));
-                    case ELSE:
-                        throw SyntaxError("stray else" + at(token.line));
-                }
-            }
-        }
-        if (token == Token::braceLeft()) {
-            auto stmt = compileStatements(current);
-            if (*current != Token::braceRight())
-                throw SyntaxError("missing '}' to match '{'" + current->at());
-            ++current;
-            return std::make_unique<BraceNode>(this, token.line, std::move(stmt));
-        }
-        if (token == Token::parenLeft()) {
-            auto expr = compileExpression(current);
-            if (*current != Token::parenRight())
-                throw SyntaxError("missing ')' to match '('" + current->at());
-            ++current;
-            return expr;
-        }
-        throw SyntaxError("unexpected leaf node token for expression" + token.at());
-    }
     switch (Operator const* op; level) {
+        case LEVEL_PRIMARY:
+            switch (auto token = *current++; token.type) {
+                case TokenType::LITERAL_BOOL:
+                    return std::make_unique<ValNode>(this, token.line, Object{token.literal_bool()});
+                case TokenType::LITERAL_INT:
+                    return std::make_unique<ValNode>(this, token.line, Object{token.literal_int()});
+                case TokenType::LITERAL_REAL:
+                    return std::make_unique<ValNode>(this, token.line, Object{token.literal_real()});
+                case TokenType::IDENTIFIER:
+                    return std::make_unique<RefNode>(this, token.line, token.identifier());
+                case TokenType::KEYWORD: {
+                    using namespace Keyword;
+                    switch (token.keyword()) {
+                        case FUNCTION:
+                            return compileFunction(current);
+                        case FOR:
+                            return compileFor(current);
+                        case WHILE:
+                            return compileWhile(current);
+                        case DO:
+                            return compileDoWhile(current);
+                        case IF:
+                            return compileIfElse(current);
+                        case TRY:
+                            return compileTry(current);
+                        case BREAK:
+                            return std::make_unique<JumpNode>(this, token.line, JumpTarget::BREAK);
+                        case CONTINUE:
+                            return std::make_unique<JumpNode>(this, token.line, JumpTarget::CONTINUE);
+                        case CATCH:
+                            throw SyntaxError("stray catch" + at(token.line));
+                        case ELSE:
+                            throw SyntaxError("stray else" + at(token.line));
+                    }
+                }
+                case TokenType::BRACE:
+                    if (token == Token::braceLeft()) {
+                        auto stmt = compileStatements(current);
+                        if (*current != Token::braceRight())
+                            throw SyntaxError("missing '}' to match '{'" + current->at());
+                        ++current;
+                        return stmt;
+                    }
+                case TokenType::PAREN:
+                    if (token == Token::parenLeft()) {
+                        auto expr = compileExpression(current);
+                        if (*current != Token::parenRight())
+                            throw SyntaxError("missing ')' to match '('" + current->at());
+                        ++current;
+                        return expr;
+                    }
+                default:
+                    throw SyntaxError("unexpected leaf node token for expression" + token.at());
+            }
         case LEVEL_UNARY_PREFIX: {
             if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
                 int line = current++->line;
@@ -183,7 +184,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
             }
             return expr;
         }
-        case LEVEL_PRIMARY: {
+        case LEVEL_ROOT: {
             if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
                 int line = current++->line;
                 return std::make_unique<OpUnaryNode>(this, line, compileExpression(current, level), op);
@@ -321,7 +322,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileFunction(Token*& current) {
     std::unique_ptr<ExprNode> stmt;
     if (*++current == Token::punctuation("=")) {
         auto expr = compileExpression(++current);
-        stmt = std::make_unique<OpUnaryNode>(this, expr->line, std::move(expr), findOperator("return", LEVEL_PRIMARY));
+        stmt = std::make_unique<OpUnaryNode>(this, expr->line, std::move(expr), findOperator("return", LEVEL_ROOT));
     } else {
         if (*current != Token::braceLeft()) throw SyntaxError("missing '{' in function" + current->at());
         stmt = compileStatements(++current);
@@ -363,7 +364,8 @@ void ScriptEngine::exec(const char* script, FILE* err) {
                 throw RuntimeError("Wild continue jump" + at(jumpFrom));
             case JumpTarget::RETURN:
             case JumpTarget::NONE:
-                fprintf(out, "%s\n", ret.val().toString().c_str());
+                if (ret.val().type() != Type::VOID)
+                    fprintf(out, "%s\n", ret.val().toString().c_str());
         }
     } catch (SyntaxError& e) {
         fprintf(err, "Syntax error: %s\n", e.what());
@@ -418,4 +420,19 @@ Object Object::invoke(ScriptEngine* engine, int line, const std::vector<Object> 
     }
 }
 
+std::string Object::toString() const {
+    return std::visit(overloaded {
+            [](auto x) { return std::to_string(x); },
+            [](std::monostate) { return std::string("<void>"); },
+            [](FuncPtr const& ptr) { return ptr->toString(); }
+    }, object);
+}
+
+std::string Function::toString() const {
+    std::string ret = descriptor();
+    ret += "{";
+    ret += stmt->toString();
+    ret += "}";
+    return ret;
+}
 }

@@ -109,6 +109,22 @@ struct Function {
     Type returnType;
     std::vector<Parameter> parameters;
     std::unique_ptr<ExprNode> stmt;
+
+    [[nodiscard]] std::string descriptor() const {
+        std::string ret = "function(";
+        bool first = true;
+        for (auto&& [type, name] : parameters) {
+            if (first) { first = false; } else { ret += ", "; }
+            ret += name;
+            ret += ": ";
+            ret += TYPE_NAMES[(size_t)type];
+        }
+        ret += "): ";
+        ret += TYPE_NAMES[(size_t)returnType];
+        return ret;
+    }
+
+    [[nodiscard]] std::string toString() const;
 };
 
 struct Object {
@@ -148,26 +164,7 @@ struct Object {
         }
     }
 
-    [[nodiscard]] std::string toString() const {
-        return std::visit(overloaded {
-            [](auto x) { return std::to_string(x); },
-            [](std::monostate) { return std::string("<void>"); },
-            [](FuncPtr const& ptr) {
-                std::string ret = "<function(";
-                bool first = true;
-                for (auto&& [type, name] : ptr->parameters) {
-                    if (first) { first = false; } else { ret += ", "; }
-                    ret += name;
-                    ret += ": ";
-                    ret += TYPE_NAMES[(size_t)type];
-                }
-                ret += "): ";
-                ret += TYPE_NAMES[(size_t)ptr->returnType];
-                ret += ">";
-                return ret;
-            }
-        }, object);
-    }
+    [[nodiscard]] std::string toString() const;
 
     template<typename T>
     T as() {
@@ -210,9 +207,10 @@ struct Operand {
 // 11 unary prefix
 // 12 unary postfix
 
-constexpr int LEVEL_PRIMARY = 0;
+constexpr int LEVEL_ROOT = 0;
 constexpr int LEVEL_UNARY_PREFIX = 11;
 constexpr int LEVEL_UNARY_POSTFIX = 12;
+constexpr int LEVEL_PRIMARY = 13;
 
 struct Operator {
     using Unary = std::function<Operand(ExprNode*)>;
@@ -324,23 +322,72 @@ struct ExprNode {
     ScriptEngine* engine;
     int line;
     ExprNode(ScriptEngine* engine, int line): engine(engine), line(line) {}
+
     Operand eval() const {
         return do_eval();
     }
+
     Operand exec() const try {
         return do_eval();
     } catch (Interruption) {
         return {};
     }
+
     virtual Operand do_eval() const = 0;
+
+    [[nodiscard]] std::string walk() const {
+        int id = 0;
+        std::string buf;
+        walk(buf, id);
+        return buf;
+    }
+
+    [[nodiscard]] virtual std::vector<ExprNode*> children() const {
+        return {};
+    }
+
+    [[nodiscard]] virtual std::string descriptor() const = 0;
+
+    [[nodiscard]] virtual std::string toString() const {
+        return descriptor();
+    }
+
     virtual ~ExprNode() = default;
+
+private:
+    void walk(std::string& buf, int& id) const {
+        std::string pid = std::to_string(id);
+        buf += "id_" + pid + "[\"" + descriptor() + "\"]\n";
+        for (auto&& child : children()) {
+            ++id;
+            buf += "id_" + pid + "-->" + "id_" + std::to_string(id) + "\n";
+            child->walk(buf, id);
+        }
+    }
 };
 
 struct ValNode : ExprNode {
     Object val;
     ValNode(ScriptEngine* engine, int line, Object val): ExprNode(engine, line), val(std::move(val)) {}
+
     Operand do_eval() const override {
         return val;
+    }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        if (val.type() == Type::FUNC) {
+            auto&& fn = *get<FuncPtr>(val.object);
+            return {fn.stmt.get()};
+        }
+        return {};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        if (val.type() == Type::FUNC) {
+            auto&& fn = *get<FuncPtr>(val.object);
+            return fn.descriptor();
+        }
+        return val.toString();
     }
 };
 
@@ -350,6 +397,10 @@ struct RefNode : ExprNode {
 
     Operand do_eval() const override {
         return engine->findOperand(name, line);
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return name;
     }
 
     Operand initialize(ExprNode* initializer) {
@@ -371,6 +422,22 @@ struct OpUnaryNode : ExprNode {
     Operand do_eval() const override {
         return op->asUnary()(operand.get());
     }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        return {operand.get()};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return std::string(op->literal);
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        auto first = &*begin(OPERATORS[LEVEL_UNARY_POSTFIX]), last = &*end(OPERATORS[LEVEL_UNARY_POSTFIX]);
+        if (first <= op && op < last) // postfix
+            return "(" + operand->toString() + " " + std::string(op->literal) + ")";
+        else // prefix
+            return "(" + std::string(op->literal) + " " + operand->toString() + ")";
+    }
 };
 
 struct OpBinaryNode : ExprNode {
@@ -385,6 +452,18 @@ struct OpBinaryNode : ExprNode {
     Operand do_eval() const override {
         return op->asBinary()(lhs.get(), rhs.get());
     }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        return {lhs.get(), rhs.get()};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return std::string(op->literal);
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        return "(" + lhs->toString() + std::string(op->literal) + rhs->toString() + ")";
+    }
 };
 
 struct OpTernaryNode : ExprNode {
@@ -397,6 +476,18 @@ struct OpTernaryNode : ExprNode {
 
     Operand do_eval() const override {
         return cond->eval().val().asBool(line) ? lhs->eval() : rhs->eval();
+    }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        return {cond.get(), lhs.get(), rhs.get()};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "?:";
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        return "(" + cond->toString() + "?" + lhs->toString() + ":" + rhs->toString() + ")";
     }
 };
 
@@ -416,12 +507,40 @@ struct OpInvokeNode : ExprNode {
         }
         return func->eval().val().invoke(engine, line, objects);
     }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        std::vector<ExprNode*> ret{func.get()};
+        for (auto&& arg : args) {
+            ret.push_back(arg.get());
+        }
+        return ret;
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "()";
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        std::string ret = func->toString();
+        ret += "(";
+        bool first = true;
+        for (auto&& arg : args) {
+            if (first) { first = false; } else { ret += ", "; }
+            ret += arg->toString();
+        }
+        ret += ")";
+        return ret;
+    }
 };
 
 struct NoopNode : ExprNode {
     NoopNode(ScriptEngine* engine, int line): ExprNode(engine, line) {}
+
     Operand do_eval() const override {
         return {};
+    }
+    [[nodiscard]] std::string descriptor() const override {
+        return "{}";
     }
 };
 
@@ -429,11 +548,35 @@ struct StmtsNode : ExprNode {
     std::vector<std::unique_ptr<ExprNode>> stmts;
     StmtsNode(ScriptEngine* engine, int line, std::vector<std::unique_ptr<ExprNode>> stmts)
         : ExprNode(engine, line), stmts(std::move(stmts)) {}
+
     Operand do_eval() const override {
+        ScriptScope scope(engine);
         Operand ret;
         for (auto&& stmt : stmts) {
             ret = stmt->eval();
         }
+        return ret;
+    }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        std::vector<ExprNode*> ret;
+        for (auto&& stmt : stmts) {
+            ret.push_back(stmt.get());
+        }
+        return ret;
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "{}";
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        std::string ret = "{";
+        for (auto&& stmt : stmts) {
+            ret += stmt->toString();
+            ret += ";";
+        }
+        ret += "}";
         return ret;
     }
 };
@@ -442,11 +585,22 @@ struct JumpNode : ExprNode {
     JumpTarget jumpTarget;
     JumpNode(ScriptEngine* engine, int line, JumpTarget jumpTarget)
             : ExprNode(engine, line), jumpTarget(jumpTarget) {}
+
     Operand do_eval() const override {
         engine->target = {};
         engine->jumpTarget = jumpTarget;
         engine->jumpFrom = line;
         throw Interruption{};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        switch (jumpTarget) {
+            case JumpTarget::BREAK:
+                return "break";
+            case JumpTarget::CONTINUE:
+                return "continue";
+        }
+        throw RuntimeError("Assertion failed");
     }
 };
 
@@ -457,6 +611,7 @@ struct WhileNode : ExprNode {
               std::unique_ptr<ExprNode> cond,
               std::unique_ptr<ExprNode> loop)
             : ExprNode(engine, line), cond(std::move(cond)), loop(std::move(loop)) {}
+
     Operand do_eval() const override {
         ScriptScope scope(engine);
         Operand ret;
@@ -476,6 +631,18 @@ struct WhileNode : ExprNode {
         }
         return ret;
     }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        return {cond.get(), loop.get()};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "while";
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        return "while " + cond->toString() + loop->toString();
+    }
 };
 
 struct DoWhileNode : ExprNode {
@@ -485,6 +652,7 @@ struct DoWhileNode : ExprNode {
                 std::unique_ptr<ExprNode> loop,
                 std::unique_ptr<ExprNode> cond)
             : ExprNode(engine, line), loop(std::move(loop)), cond(std::move(cond)) {}
+
     Operand do_eval() const override {
         ScriptScope scope(engine);
         Operand ret;
@@ -504,6 +672,18 @@ struct DoWhileNode : ExprNode {
         } while (cond->eval().val().asBool(cond->line));
         return ret;
     }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        return {loop.get(), cond.get()};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "do-while";
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        return "do" + loop->toString() + "while " + cond->toString() + ";";
+    }
 };
 
 struct ForNode : ExprNode {
@@ -517,6 +697,7 @@ struct ForNode : ExprNode {
             std::unique_ptr<ExprNode> iter,
             std::unique_ptr<ExprNode> loop)
             : ExprNode(engine, line), init(std::move(init)), cond(std::move(cond)), iter(std::move(iter)), loop(std::move(loop)) {}
+
     Operand do_eval() const override {
         ScriptScope scope(engine);
         Operand ret;
@@ -536,16 +717,17 @@ struct ForNode : ExprNode {
         }
         return ret;
     }
-};
 
-struct BraceNode : ExprNode {
-    std::unique_ptr<ExprNode> stmt;
-    BraceNode(ScriptEngine* engine, int line,
-              std::unique_ptr<ExprNode> stmt)
-            : ExprNode(engine, line), stmt(std::move(stmt)) {}
-    Operand do_eval() const override {
-        ScriptScope scope(engine);
-        return stmt->eval();
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        return {init.get(), cond.get(), iter.get(), loop.get()};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "for";
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        return "for " + init->toString() + ";" + cond->toString() + ";" + iter->toString() + loop->toString();
     }
 };
 
@@ -558,9 +740,22 @@ struct IfElseNode : ExprNode {
                std::unique_ptr<ExprNode> then,
                std::unique_ptr<ExprNode> else_)
             : ExprNode(engine, line), cond(std::move(cond)), then(std::move(then)), else_(std::move(else_)) {}
+
     Operand do_eval() const override {
         ScriptScope scope(engine);
         return cond->eval().val().asBool(cond->line) ? then->eval() : else_->eval();
+    }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        return {cond.get(), then.get(), else_.get()};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "if-else";
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        return "if " + cond->toString() + then->toString() + "else" + else_->toString();
     }
 };
 
@@ -573,6 +768,7 @@ struct TryNode : ExprNode {
             std::string name,
             std::unique_ptr<ExprNode> catch_)
             : ExprNode(engine, line), try_(std::move(try_)), name(std::move(name)), catch_(std::move(catch_)) {}
+
     Operand do_eval() const override {
         Operand ret;
         {
@@ -589,6 +785,18 @@ struct TryNode : ExprNode {
             throw Interruption{};
         }
         return ret;
+    }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        return {try_.get(), catch_.get()};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "try-catch";
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        return "try" + try_->toString() + "catch " + name + catch_->toString();
     }
 };
 
@@ -700,6 +908,10 @@ struct ExternalFunctionInvocationNode : ExprNode {
 
     template<size_t... I>
     Operand eval(std::index_sequence<I...>) const;
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "<external function invocation>";
+    }
 };
 
 template<typename R, typename... Args>
@@ -709,7 +921,7 @@ std::function<FuncPtr(ScriptEngine*)> external(std::function<R(Args...)> functio
     return [function](ScriptEngine* engine) {
         return std::make_shared<Function>(Function{parseType<R>(), externalParameters<Args...>(std::index_sequence_for<Args...>()),
                 std::make_unique<OpUnaryNode>(engine, 0, std::make_unique<ExternalFunctionInvocationNode<R, Args...>>(engine, function),
-                                              findOperator("return", LEVEL_PRIMARY))});
+                                              findOperator("return", LEVEL_ROOT))});
     };
 }
 
