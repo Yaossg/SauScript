@@ -113,5 +113,5 @@ SauScript 的运算符和字面量优先级从低到高：
 | 10     | `* / %`                                                      | 从左到右 |
 | 11     | `! ~`<br>`+ - ++ --`（前缀）                                 | 从右到左 |
 | 12     | `++ --`（后缀）<br>`()`（函数调用）                          | 从左到右 |
-| 13 | `true false __LINE__ nan inf continue break function`<br/>`if-else try-catch while do-while for` | 从左到右 |
+| 13 | `true false __LINE__ nan inf function`<br>`continue break`<br/>`if-else try-catch while do-while for` | 从左到右 |
 

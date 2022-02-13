@@ -99,7 +99,7 @@ Operand ScriptEngine::findOperand(const std::string& name, int line) {
     throw RuntimeError("reference to undefined variable '" + name + "'" + at(line));
 }
 
-std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level = 0) {
+std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level = LEVEL_ROOT) {
     switch (Operator const* op; level) {
         case LEVEL_PRIMARY:
             switch (auto token = *current++; token.type) {
@@ -212,6 +212,9 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
             auto expr = compileExpression(current, level + 1);
             while (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
                 int line = current++->line;
+                if (current->type == TokenType::PUNCTUATION && findOperator(current->punctuation(), LEVEL_ROOT))
+                    return std::make_unique<OpBinaryNode>(this, line, std::move(expr),
+                                                          compileExpression(current, LEVEL_ROOT), op);
                 expr = std::make_unique<OpBinaryNode>(this, line, std::move(expr),
                                                       compileExpression(current, level + 1), op);
             }
