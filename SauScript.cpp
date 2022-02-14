@@ -10,7 +10,7 @@ namespace SauScript {
             if (skipLineBreak(++source, true, line)) continue;
             throw SyntaxError("stray '\\'" + at(line));
         } else if (skipLineBreak(source, false, line)) {
-            tokens.push_back(Token::linebreak());
+            tokens.push_back(Token::linebreak().at(line - 1));
         } else if (std::isspace(ch)) {
             ++source;
         } else {
@@ -86,7 +86,7 @@ namespace SauScript {
             }
         }
     }
-    tokens.push_back(Token::linebreak());
+    tokens.push_back(Token::linebreak().at(line - 1));
     tokens.push_back(Token::eot().at(line));
     return tokens;
 }
@@ -125,7 +125,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                         case IF:
                             return compileIfElse(current);
                         case TRY:
-                            return compileTry(current);
+                            return compileTryCatch(current);
                         case BREAK:
                             return std::make_unique<JumpNode>(this, token.line, JumpTarget::BREAK);
                         case CONTINUE:
@@ -241,7 +241,8 @@ std::unique_ptr<ExprNode> ScriptEngine::compileDoWhile(Token*& current) {
     auto stmt = compileStatements(++current);
     if (*current != Token::braceRight()) throw SyntaxError("missing '}' in do-while" + current->at());
     if (*++current != Token::keyword(WHILE)) throw SyntaxError("missing 'while' in do-while" + current->at());
-    auto cond = compileExpression(current);
+    auto cond = compileExpression(++current);
+    if (*current != Token::linebreak()) throw SyntaxError("missing linebreak in do-while" + current->at());
     ++current;
     return std::make_unique<DoWhileNode>(this, line, std::move(stmt), std::move(cond));
 }
@@ -284,7 +285,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileIfElse(Token*& current) {
     return std::make_unique<IfElseNode>(this, line, std::move(cond), std::move(then), std::move(else_));
 }
 
-std::unique_ptr<ExprNode> ScriptEngine::compileTry(Token*& current) {
+std::unique_ptr<ExprNode> ScriptEngine::compileTryCatch(Token*& current) {
     using namespace Keyword;
     int line = (--current)->line;
     if (*++current != Token::braceLeft()) throw SyntaxError("missing '{' in try" + current->at());
@@ -297,7 +298,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileTry(Token*& current) {
     auto catch_ = compileStatements(++current);
     if (*current != Token::braceRight()) throw SyntaxError("missing end in try" + current->at());
     ++current;
-    return std::make_unique<TryNode>(this, line, std::move(try_), name, std::move(catch_));
+    return std::make_unique<TryCatchNode>(this, line, std::move(try_), name, std::move(catch_));
 }
 
 std::unique_ptr<ExprNode> ScriptEngine::compileFunction(Token*& current) {
@@ -320,18 +321,12 @@ std::unique_ptr<ExprNode> ScriptEngine::compileFunction(Token*& current) {
             throw SyntaxError("unexpected token interrupt function definition" + (--current)->at());
     }
     if (*++current != Token::punctuation(":"))
-        throw SyntaxError("expected ':' after parameter list" + (--current)->at());
+        throw SyntaxError("expected ':' after parameter list" + current->at());
     Type return_type = parseType(*++current);
     std::unique_ptr<ExprNode> stmt;
-    if (*++current == Token::punctuation("=")) {
-        auto expr = compileExpression(++current);
-        stmt = std::make_unique<OpUnaryNode>(this, expr->line, std::move(expr), findOperator("return", LEVEL_ROOT));
-    } else {
-        if (*current != Token::braceLeft()) throw SyntaxError("missing '{' in function" + current->at());
-        stmt = compileStatements(++current);
-        if (*current != Token::braceRight()) throw SyntaxError("missing '}' in function" + current->at());
-        ++current;
-    }
+    if (*++current != Token::punctuation("="))
+        throw SyntaxError("expected '=' after return type" + current->at());
+    stmt = compileExpression(++current);
     return std::make_unique<ValNode>(this, line, Object{
         std::make_shared<Function>(Function{return_type, parameters, std::move(stmt)})});
 }
@@ -355,8 +350,8 @@ std::unique_ptr<ExprNode> ScriptEngine::compile(const char* script) {
 
 void ScriptEngine::exec(const char* script, FILE* err) {
     try {
-        Operand ret = compile(script)->exec();
-        if (jumpTarget == JumpTarget::RETURN) ret = target;
+        compile(script)->push();
+        Operand ret;
         switch (jumpTarget) {
             case JumpTarget::THROW:
                 fprintf(err, "Unhandled exception: %s", target.toString().c_str());
@@ -366,19 +361,27 @@ void ScriptEngine::exec(const char* script, FILE* err) {
             case JumpTarget::CONTINUE:
                 throw RuntimeError("Wild continue jump" + at(jumpFrom));
             case JumpTarget::RETURN:
+                ret = target;
+                break;
             case JumpTarget::NONE:
-                if (ret.val().type() != Type::VOID)
-                    fprintf(out, "%s\n", ret.val().toString().c_str());
+                ret = pop();
+                break;
         }
+        if (ret.val().type() != Type::VOID)
+            fprintf(out, "%s\n", ret.val().toString().c_str());
     } catch (SyntaxError& e) {
         fprintf(err, "Syntax error: %s\n", e.what());
     } catch (RuntimeError& e) {
         fprintf(err, "Runtime error: %s\n", e.what());
     }
+    if (!stack.empty()) {
+        fprintf(err, "Memory leaked: %d\n", stack.size());
+        while (!stack.empty()) stack.pop();
+    }
     jumpTarget = JumpTarget::NONE;
 }
 
-Object Object::invoke(ScriptEngine* engine, int line, const std::vector<Object> &arguments) {
+void Object::invoke(ScriptEngine* engine, int line, const std::vector<Object> &arguments) {
     if (!std::holds_alternative<FuncPtr>(object))
         throw RuntimeError("not a function" + at(line));
     auto&& fn = *std::get<FuncPtr>(object);
@@ -396,30 +399,28 @@ Object Object::invoke(ScriptEngine* engine, int line, const std::vector<Object> 
             throw RuntimeError("wrong type of the " + std::to_string(i + 1) + "th argument" + at(line));
         }
     }
-    fn.stmt->exec();
+    fn.stmt->push();
     switch (engine->jumpTarget) {
         case JumpTarget::RETURN: {
             engine->jumpTarget = JumpTarget::NONE;
             int line = engine->jumpFrom;
             Object returned = engine->target;
             if (returned.type() == Type::INT && fn.returnType == Type::REAL) {
-                return returned.promote(line);
+                engine->push(returned.promote(line));
             } else if (returned.type() == fn.returnType) {
-                return returned;
+                engine->push(returned);
             } else {
                 throw RuntimeError("invalid return type" + at(line));
             }
         }
+        case JumpTarget::NONE:
         default:
         case JumpTarget::THROW:
-            throw Interruption{};
+            return;
         case JumpTarget::BREAK:
             throw RuntimeError("Wild break jump" + at(engine->jumpFrom));
         case JumpTarget::CONTINUE:
             throw RuntimeError("Wild continue jump" + at(engine->jumpFrom));
-        case JumpTarget::NONE:
-            if (fn.returnType == Type::VOID) return {};
-            else throw RuntimeError("non-void function returns nothing" + at(line));
     }
 }
 
@@ -433,7 +434,7 @@ std::string Object::toString() const {
 
 std::string Function::toString() const {
     std::string ret = descriptor();
-    ret += "{";
+    ret += " = {";
     ret += stmt->toString();
     ret += "}";
     return ret;

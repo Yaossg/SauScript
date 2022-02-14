@@ -24,94 +24,128 @@ void shift_assert(int_t b, int line) {
 template<typename Fn>
 auto simpleBinary(Fn fn) {
     return [fn](ExprNode* lhs, ExprNode* rhs) {
-        return std::visit([fn](auto lhs, auto rhs) { return Object{fn(*lhs, *rhs)}; },
-                          lhs->eval().val().asNumber(lhs->line), rhs->eval().val().asNumber(rhs->line));
+        auto* engine = lhs->engine;
+        lhs->push();
+        if (engine->jumpTarget != JumpTarget::NONE) return;
+        auto a = engine->pop();
+        rhs->push();
+        if (engine->jumpTarget != JumpTarget::NONE) return;
+        auto b = engine->pop();
+        engine->push(std::visit([fn](auto lhs, auto rhs) { return Object{fn(*lhs, *rhs)}; },
+                          a.val().asNumber(lhs->line), b.val().asNumber(rhs->line)));
     };
 }
 
 template<typename Fn>
 auto intBinary(char const* name, Fn fn, Assertion* an = noop_assert) {
     return [name, fn, an](ExprNode* lhs, ExprNode* rhs) {
-        auto a = lhs->eval().val().asIntOp(name, lhs->line);
-        auto b = rhs->eval().val().asIntOp(name, rhs->line);
+        auto* engine = lhs->engine;
+        lhs->push();
+        if (engine->jumpTarget != JumpTarget::NONE) return;
+        auto a = lhs->engine->pop().val().asIntOp(name, lhs->line);
+        rhs->push();
+        if (engine->jumpTarget != JumpTarget::NONE) return;
+        auto b = rhs->engine->pop().val().asIntOp(name, rhs->line);
         an(b, rhs->line);
-        return Object{fn(a, b)};
+        engine->push(Object{fn(a, b)});
     };
 }
 
 template<typename Fn>
 auto simpleAssignment(Fn fn) {
     return [fn](ExprNode* lhs, ExprNode* rhs) {
-        auto a = lhs->eval();
-        std::visit(fn, a.ref(lhs->line)->asNumber(lhs->line), rhs->eval().val().asNumber(rhs->line));
-        return a;
+        auto* engine = lhs->engine;
+        lhs->push();
+        if (engine->jumpTarget != JumpTarget::NONE) return;
+        rhs->push();
+        if (engine->jumpTarget != JumpTarget::NONE) { engine->pop(); return; }
+        auto b = engine->pop();
+        std::visit(fn, engine->top().ref(lhs->line)->asNumber(lhs->line), b.val().asNumber(rhs->line));
     };
 }
 
 template<typename Fn>
 auto intAssignment(char const* name, Fn fn, Assertion* an = noop_assert) {
     return [name, fn, an](ExprNode* lhs, ExprNode* rhs) {
-        auto a = lhs->eval();
-        int_t& r = a.ref(lhs->line)->asIntOp(name, lhs->line);
-        int_t b = rhs->eval().val().asIntOp(name, lhs->line);
+        auto* engine = lhs->engine;
+        lhs->push();
+        if (engine->jumpTarget != JumpTarget::NONE) return;
+        rhs->push();
+        if (engine->jumpTarget != JumpTarget::NONE) { engine->pop(); return; }
+        int_t b = engine->pop().val().asIntOp(name, lhs->line);
         an(b, rhs->line);
-        fn(r, b);
-        return a;
+        fn(engine->top().ref(lhs->line)->asIntOp(name, lhs->line), b);
     };
 }
 
 const std::vector<Operator> OPERATORS[13] = {
         {
-                {"print", [](ExprNode* rhs) -> Operand {
-                    fprintf(rhs->engine->out, "%s\n", rhs->eval().val().toString().c_str());
-                    return {};
+                {"print", [](ExprNode* rhs) {
+                    auto* engine = rhs->engine;
+                    rhs->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    fprintf(rhs->engine->out, "%s\n", engine->pop().val().toString().c_str());
+                    engine->push({});
                 }},
-                {"input", [](ExprNode* rhs) -> Operand {
+                {"input", [](ExprNode* rhs) {
+                    auto* engine = rhs->engine;
+                    rhs->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
                     std::visit(overloaded {
                             [engine = rhs->engine](int_t& a) { if (!fscanf(engine->in, "%lld", &a)) throw RuntimeError("illegal input as int"); },
                             [engine = rhs->engine](real_t& a) { if (!fscanf(engine->in, "%lf", &a)) throw RuntimeError("illegal input as real"); },
                             [line = rhs->line](FuncPtr& a) { throw RuntimeError("attempt to input a function" + at(line)); },
                             [line = rhs->line](std::monostate& a) { throw RuntimeError("attempt to input void" + at(line)); }
-                    }, rhs->eval().ref(rhs->line)->object);
-                    return {};
+                    }, engine->top().ref(rhs->line)->object);
                 }},
-                {"throw", [](ExprNode* rhs) -> Operand {
+                {"throw", [](ExprNode* rhs) {
                     auto* engine = rhs->engine;
-                    engine->target = rhs->eval().val();
+                    rhs->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    engine->target = engine->pop().val();
                     engine->jumpTarget = JumpTarget::THROW;
                     engine->jumpFrom = rhs->line;
-                    throw Interruption{};
                 }},
-                {"yield", [](ExprNode* rhs) -> Operand {
+                {"yield", [](ExprNode* rhs) {
                     auto* engine = rhs->engine;
-                    engine->target = rhs->eval().val();
+                    rhs->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    engine->target = engine->pop().val();
                     engine->jumpTarget = JumpTarget::BREAK;
                     engine->jumpFrom = rhs->line;
-                    throw Interruption{};
                 }},
-                {"return", [](ExprNode* rhs) -> Operand {
+                {"return", [](ExprNode* rhs) {
                     auto* engine = rhs->engine;
-                    engine->target = rhs->eval().val();
+                    rhs->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    engine->target = engine->pop().val();
                     engine->jumpTarget = JumpTarget::RETURN;
                     engine->jumpFrom = rhs->line;
-                    throw Interruption{};
                 }},
-                {":=", [](ExprNode* lhs, ExprNode* rhs) -> Operand {
+                {":=", [](ExprNode* lhs, ExprNode* rhs) {
+                    auto* engine = rhs->engine;
+                    rhs->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
                     if (auto* ref = dynamic_cast<RefNode*>(lhs))
-                        return ref->initialize(rhs);
-                    throw RuntimeError("initialization cannot be applied to an expression");
+                        ref->initialize();
+                    else
+                        throw RuntimeError("initialization cannot be applied to an expression");
                 }},
                 {"=",  simpleAssignment([](auto* lhs, auto* rhs) { *lhs = *rhs; })},
                 {"+=", simpleAssignment([](auto* lhs, auto* rhs) { *lhs += *rhs; })},
                 {"-=", simpleAssignment([](auto* lhs, auto* rhs) { *lhs -= *rhs; })},
                 {"*=", simpleAssignment([](auto* lhs, auto* rhs) { *lhs *= *rhs; })},
                 {"/=", [](ExprNode* lhs, ExprNode* rhs) {
-                    auto a = lhs->eval();
+                    auto* engine = lhs->engine;
+                    lhs->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    rhs->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) { engine->pop(); return; }
+                    auto b = engine->pop();
                     std::visit(overloaded {
                             [line = rhs->line](int_t* lhs, auto* rhs) { division_assert(*rhs, line); *lhs /= *rhs; },
                             [](auto* lhs, auto* rhs) { *lhs /= *rhs; }
-                    }, a.ref(lhs->line)->asNumber(lhs->line), rhs->eval().val().asNumber(rhs->line));
-                    return a;
+                    }, engine->top().ref(lhs->line)->asNumber(lhs->line), b.val().asNumber(rhs->line));
                 }},
                 {"%=", intAssignment("%=", [](int_t& lhs, int_t rhs) { lhs %= rhs; }, division_assert)},
                 {"<<=",intAssignment("<<=", [](int_t& lhs, int_t rhs) { lhs <<= rhs; }, shift_assert)},
@@ -121,10 +155,20 @@ const std::vector<Operator> OPERATORS[13] = {
                 {"|=", intAssignment("|=", [](int_t& lhs, int_t rhs) { lhs |= rhs; })}
         },
         {{"||", [](ExprNode *lhs, ExprNode *rhs) {
-            return Object{lhs->eval().val().asBool(lhs->line) || rhs->eval().val().asBool(rhs->line)};
+            auto* engine = lhs->engine;
+            lhs->push();
+            if (engine->jumpTarget != JumpTarget::NONE) return;
+            if (engine->top().val().asBool(lhs->line)) return;
+            engine->pop();
+            rhs->push();
         }}},
         {{"&&", [](ExprNode *lhs, ExprNode *rhs) {
-            return Object{lhs->eval().val().asBool(lhs->line) && rhs->eval().val().asBool(rhs->line)};
+            auto* engine = lhs->engine;
+            lhs->push();
+            if (engine->jumpTarget != JumpTarget::NONE) return;
+            if (!engine->top().val().asBool(lhs->line)) return;
+            engine->pop();
+            rhs->push();
         }}},
         {{"|", intBinary("|", std::bit_or<int_t>{})}},
         {{"^", intBinary("^", std::bit_xor<int_t>{})}},
@@ -150,37 +194,63 @@ const std::vector<Operator> OPERATORS[13] = {
         {
                 {"*", simpleBinary(std::multiplies<>{})},
                 {"/", [](ExprNode* lhs, ExprNode* rhs) {
-                    return Object{std::visit(overloaded {
+                    auto* engine = lhs->engine;
+                    lhs->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    auto a = engine->pop();
+                    rhs->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    auto b = engine->pop();
+                    engine->push(std::visit(overloaded {
                             [line = rhs->line](int_t* lhs, int_t* rhs) { division_assert(*rhs, line); return Object{*lhs / *rhs}; },
                             [](auto* lhs, auto* rhs) { return Object{*lhs / *rhs}; }
-                    }, lhs->eval().val().asNumber(lhs->line), rhs->eval().val().asNumber(rhs->line))};
+                    }, a.val().asNumber(lhs->line), b.val().asNumber(rhs->line)));
                 }},
                 {"%", intBinary("%", std::modulus<int_t>{}, division_assert)}
         },
         {
                 {"++", [](ExprNode* op) {
-                    auto a = op->eval();
-                    ++a.ref(op->line)->asIntOp("++", op->line);
-                    return a;
+                    auto* engine = op->engine;
+                    op->push();
+                    ++engine->top().ref(op->line)->asIntOp("++", op->line);
                 }},
                 {"--", [](ExprNode *op) {
-                    auto a = op->eval();
-                    --a.ref(op->line)->asIntOp("--", op->line);
-                    return a;
+                    auto* engine = op->engine;
+                    op->push();
+                    --engine->top().ref(op->line)->asIntOp("--", op->line);
                 }},
-                {"+", [](ExprNode *op) { return op->eval().val(); }},
+                {"+", [](ExprNode *op) { op->push(); }},
                 {"-", [](ExprNode *op) {
-                    return std::visit([](auto* a) { return Object{-*a}; }, op->eval().val().asNumber(op->line));
+                    auto* engine = op->engine;
+                    op->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    engine->push(std::visit([](auto* a) { return Object{-*a}; }, engine->pop().val().asNumber(op->line)));
                 }},
-                {"!", [](ExprNode *op) { return Object{!op->eval().val().asBool(op->line)}; }},
-                {"~", [](ExprNode *op) { return Object{~op->eval().val().asIntOp("~", op->line)}; }}
+                {"!", [](ExprNode *op) {
+                    auto* engine = op->engine;
+                    op->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    engine->push(Object{!engine->pop().val().asBool(op->line)});
+                }},
+                {"~", [](ExprNode *op) {
+                    auto* engine = op->engine;
+                    op->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    engine->push(Object{~engine->top().val().asIntOp("~", op->line)});
+                }}
         },
         {
                 {"++", [](ExprNode *op) {
-                    return Object{op->eval().ref(op->line)->asIntOp("++", op->line)++};
+                    auto* engine = op->engine;
+                    op->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    engine->push(Object{engine->pop().ref(op->line)->asIntOp("++", op->line)++});
                 }},
                 {"--", [](ExprNode *op) {
-                    return Object{op->eval().ref(op->line)->asIntOp("--", op->line)--};
+                    auto* engine = op->engine;
+                    op->push();
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    engine->push(Object{engine->pop().ref(op->line)->asIntOp("--", op->line)--});
                 }}
         }
 };
@@ -259,11 +329,6 @@ void installEnvironment(ScriptEngine* engine) {
         engine->global()["egamma"]      = {egamma};
         engine->global()["phi"]         = {phi};
     }
-
-    ::srand(1);
-    engine->installExternalFunction("srand",    ::srand);
-    engine->installExternalFunction("rand",     ::rand);
-    engine->global()["RAND_MAX"]        = {RAND_MAX};
 
     engine->installExternalFunction("counter",  [i = int_t()]() mutable { return i++; });
 
