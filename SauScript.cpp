@@ -2,40 +2,40 @@
 
 namespace SauScript {
 
-[[nodiscard]] auto tokenize(char const* source) {
+[[nodiscard]] auto tokenize(char const* current) {
     std::vector<Token> tokens;
     int line = 1;
-    while (char const ch = *source) {
+    while (char const ch = *current) {
         if (ch == '\\') {
-            if (skipLineBreak(++source, true, line)) continue;
+            if (skipLineBreak(++current, true, line)) continue;
             throw SyntaxError("stray '\\'" + at(line));
-        } else if (skipLineBreak(source, false, line)) {
+        } else if (skipLineBreak(current, false, line)) {
             tokens.push_back(Token::linebreak().at(line - 1));
         } else if (std::isspace(ch)) {
-            ++source;
+            ++current;
         } else {
             switch (ch) {
                 case '(':
                     tokens.push_back(Token::parenLeft().at(line));
-                    ++source;
+                    ++current;
                     continue;
                 case ')':
                     tokens.push_back(Token::parenRight().at(line));
-                    ++source;
+                    ++current;
                     continue;
                 case '{':
                     tokens.push_back(Token::braceLeft().at(line));
-                    ++source;
+                    ++current;
                     continue;
                 case '}':
                     tokens.push_back(Token::braceRight().at(line));
-                    ++source;
+                    ++current;
                     continue;
             }
             if (isIdentifierStart(ch)) {
-                char const *first = source;
-                while (isIdentifierContinue(*++source));
-                std::string token{first, source};
+                char const *first = current;
+                while (isIdentifierContinue(*++current));
+                std::string token{first, current};
                 if (token == "false") {
                     tokens.push_back(Token::literal_bool(false).at(line));
                 } else if (token == "true") {
@@ -56,30 +56,30 @@ namespace SauScript {
             } else if (isNumberStart(ch)) {
                 try {
                     size_t idx;
-                    auto x = std::stoll(source, &idx, 0);
-                    if (source[idx] != '.' && source[idx] != 'e' && source[idx] != 'E') {
+                    auto x = std::stoull(current, &idx, 0);
+                    if (current[idx] != '.' && current[idx] != 'e' && current[idx] != 'E' && current[idx] != 'p' && current[idx] != 'P') {
                         tokens.push_back(Token::literal_int(x).at(line));
-                        source += idx;
+                        current += idx;
                         continue;
                     }
                 } catch (...) {}
                 try {
                     size_t idx;
-                    tokens.push_back(Token::literal_real(std::stod(source, &idx)).at(line));
-                    source += idx;
+                    tokens.push_back(Token::literal_real(std::stod(current, &idx)).at(line));
+                    current += idx;
                 } catch (...) {
                     throw RuntimeError("invalid literal number" + at(line));
                 }
             } else {
                 std::string token;
                 for (auto &&op: opTokens()) {
-                    if (std::string_view{source}.starts_with(op)) {
+                    if (std::string_view{current}.starts_with(op)) {
                         if (op.length() > token.length()) token = op;
                     }
                 }
                 if (!token.empty()) {
                     tokens.push_back(Token::punctuation(token).at(line));
-                    source += token.length();
+                    current += token.length();
                 } else {
                     throw SyntaxError("unexpected token" + at(line));
                 }
@@ -331,7 +331,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileFunction(Token*& current) {
         std::make_shared<Function>(Function{return_type, parameters, std::move(stmt)})});
 }
 
-std::unique_ptr<ExprNode> ScriptEngine::compileStatements(Token*& current) {
+std::unique_ptr<StmtsNode> ScriptEngine::compileStatements(Token*& current) {
     std::vector<std::unique_ptr<ExprNode>> stmts;
     while (current->type != TokenType::EOT) {
         if (*current == Token::braceRight()) { break; }
@@ -342,7 +342,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileStatements(Token*& current) {
     return std::make_unique<StmtsNode>(this, line, std::move(stmts));
 }
 
-std::unique_ptr<ExprNode> ScriptEngine::compile(const char* script) {
+std::unique_ptr<StmtsNode> ScriptEngine::compile(const char* script) {
     auto tokens = tokenize(script);
     Token* current = tokens.data();
     return compileStatements(current);
@@ -350,7 +350,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compile(const char* script) {
 
 void ScriptEngine::exec(const char* script, FILE* err) {
     try {
-        compile(script)->push();
+        compile(script)->push_repl();
         Operand ret;
         switch (jumpTarget) {
             case JumpTarget::THROW:

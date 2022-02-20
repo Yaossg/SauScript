@@ -22,6 +22,7 @@ struct Operand;
 struct Operator;
 struct ScriptEngine;
 struct ExprNode;
+struct StmtsNode;
 
 struct SyntaxError : std::logic_error {
     SyntaxError(std::string const& msg): std::logic_error(msg) {}
@@ -41,25 +42,17 @@ inline std::string at(int line) {
     return line > 0 ? " at line " +  std::to_string(line) : " at unknown line";
 }
 
-inline bool skipLineBreak(char const*& str, bool strict, int& line) {
-    switch (*str) {
+inline bool skipLineBreak(char const*& current, bool strict, int& line) {
+    switch (*current) {
         case '#':
-            while (*str && *str != '\n' && *str != '\r') ++str;
-            if (*str == '\n') ++str;
+            while (*current && *current != '\n') ++current;
+            if (*current == '\n')
+                case '\n': ++current;
             ++line;
             return true;
         case ';':
             if (strict) return false;
-            skipLineBreak(++str, strict, line);
-            return true;
-        case '\n':
-            ++str;
-            ++line;
-            return true;
-        case '\r':
-            ++str;
-            if (*str == '\n') ++str;
-            ++line;
+            skipLineBreak(++current, strict, line);
             return true;
     }
     return false;
@@ -317,9 +310,9 @@ struct ScriptEngine {
     [[nodiscard]] std::unique_ptr<ExprNode> compileIfElse(Token*& current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileTryCatch(Token*& current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileFunction(Token*& current);
-    [[nodiscard]] std::unique_ptr<ExprNode> compileStatements(Token*& current);
+    [[nodiscard]] std::unique_ptr<StmtsNode> compileStatements(Token*& current);
 
-    [[nodiscard]] std::unique_ptr<ExprNode> compile(char const* script);
+    [[nodiscard]] std::unique_ptr<StmtsNode> compile(char const* script);
     void exec(char const* script, FILE* err = stderr);
 };
 
@@ -563,6 +556,10 @@ struct StmtsNode : ExprNode {
 
     void push() const override {
         ScriptScope scope(engine);
+        push_repl();
+    }
+
+    void push_repl() const {
         Operand ret;
         for (auto&& stmt : stmts) {
             stmt->push();
