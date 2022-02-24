@@ -70,17 +70,22 @@ inline bool isNumberStart(char ch) {
     return std::isdigit(ch);
 }
 
-static std::string_view TYPE_NAMES[] = {"void", "int", "real", "func"};
+static std::string_view TYPE_NAMES[] = {"void", "int", "real", "func", "list"};
 
-enum class Type {
-    VOID, INT, REAL, FUNC,
+enum class Type : size_t {
+    VOID, INT, REAL, FUNC, LIST,
 
     NAT // not a type
 };
 
+inline std::string_view nameOf(Type type) {
+    return TYPE_NAMES[(size_t) type];
+}
+
 using int_t = long long;
 using real_t = double;
-using FuncPtr = std::shared_ptr<Function>;
+using func_t = std::shared_ptr<Function>;
+using list_t = std::shared_ptr<std::vector<Object>>;
 
 template<typename T>
 constexpr Type parseType() {
@@ -90,6 +95,10 @@ constexpr Type parseType() {
         return Type::INT;
     } else if constexpr(std::is_floating_point_v<T>) {
         return Type::REAL;
+    } else if constexpr(std::is_same_v<T, func_t>) {
+        return Type::FUNC;
+    } else if constexpr(std::is_same_v<T, list_t>) {
+        return Type::LIST;
     } else throw SyntaxError("unsupported external type");
 }
 
@@ -110,10 +119,10 @@ struct Function {
             if (first) { first = false; } else { ret += ", "; }
             ret += name;
             ret += ": ";
-            ret += TYPE_NAMES[(size_t)type];
+            ret += nameOf(type);
         }
         ret += "): ";
-        ret += TYPE_NAMES[(size_t)returnType];
+        ret += nameOf(returnType);
         return ret;
     }
 
@@ -121,18 +130,34 @@ struct Function {
 };
 
 struct Object {
-    std::variant<std::monostate, int_t, real_t, FuncPtr> object;
+    std::variant<std::monostate, int_t, real_t, func_t, list_t> object;
 
-    [[nodiscard]] bool asBool(int line) {
-        if (std::holds_alternative<int_t>(object))
-            return std::get<int_t>(object) != 0;
-        throw RuntimeError("expected int as bool" + at(line));
+    [[nodiscard]] Type type() const {
+        return (Type) object.index();
     }
 
-    int_t& asIntOp(char const* op, int line) {
+    [[nodiscard]] std::string type_name() const {
+        return std::string(nameOf(type()));
+    }
+
+    [[nodiscard]] bool asBool(int line) const {
+        if (std::holds_alternative<int_t>(object))
+            return std::get<int_t>(object) != 0;
+        throw RuntimeError("expected int as bool but got " + type_name() + at(line));
+    }
+
+    [[nodiscard]] int_t& asInt(int line) {
         if (std::holds_alternative<int_t>(object))
             return std::get<int_t>(object);
-        throw RuntimeError(std::string("expected int operand for '") + op + "'" + at(line));
+        throw RuntimeError("expected int but got " + type_name() + at(line));
+    }
+
+    [[nodiscard]] std::variant<int_t*, real_t*> asNumber(int line) {
+        switch (object.index()) {
+            case 1: return &std::get<1>(object);
+            case 2: return &std::get<2>(object);
+        }
+        throw RuntimeError("expected number but got " + type_name() + at(line));
     }
 
     [[nodiscard]] Object promote(int line) const {
@@ -141,26 +166,12 @@ struct Object {
         throw RuntimeError("invalid promotion" + at(line));
     }
 
-    void invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments);
-
-    [[nodiscard]] Type type() const {
-        return (Type) object.index();
-    }
-
-    std::variant<int_t*, real_t*> asNumber(int line) {
-        switch (object.index()) {
-            default:
-            case 0: throw RuntimeError("expected a number but got void" + at(line));
-            case 1: return &std::get<1>(object);
-            case 2: return &std::get<2>(object);
-            case 3: throw RuntimeError("expected a number but got a function" + at(line));
-        }
-    }
+    void invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const;
 
     [[nodiscard]] std::string toString() const;
 
     template<typename T>
-    T as() {
+    [[nodiscard]] T as() const {
         return std::get<(size_t)parseType<T>()>(object);
     }
 };
@@ -173,11 +184,10 @@ struct Operand {
     Operand(Object* ref): val_or_ref(ref) {}
 
     [[nodiscard]] Object val() const {
-        static const struct {
-            Object operator()(Object i) const { return i; }
-            Object operator()(Object* i) const { return *i; }
-        } ValueVisitor;
-        return std::visit(ValueVisitor, val_or_ref);
+        return std::visit(overloaded {
+            [](Object const& o) { return o; },
+            [](Object* o) { return *o; }
+            }, val_or_ref);
     }
 
     [[nodiscard]] Object* ref(int line) const {
@@ -188,8 +198,8 @@ struct Operand {
 };
 
 // 0 io, parameterized jump, assignment, ternary
-// 1 logic or
-// 2 logic and
+// 1 logical or
+// 2 logical and
 // 3 bit or
 // 4 bit xor
 // 5 bit and
@@ -199,7 +209,7 @@ struct Operand {
 // 9 addition
 // 10 multiplication
 // 11 unary prefix
-// 12 unary postfix
+// 12 postfix
 
 constexpr int LEVEL_ROOT = 0;
 constexpr int LEVEL_UNARY_PREFIX = 11;
@@ -257,7 +267,7 @@ inline int parse(std::string const& kw) {
 }
 
 template<typename R, typename... Args>
-std::function<FuncPtr(ScriptEngine*)> external(std::function<R(Args...)> function);
+std::function<func_t(ScriptEngine*)> external(std::function<R(Args...)> function);
 
 void installEnvironment(ScriptEngine* engine);
 
@@ -310,7 +320,7 @@ struct ScriptEngine {
     [[nodiscard]] std::unique_ptr<ExprNode> compileIfElse(Token*& current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileTryCatch(Token*& current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileFunction(Token*& current);
-    [[nodiscard]] std::unique_ptr<StmtsNode> compileStatements(Token*& current);
+    [[nodiscard]] std::unique_ptr<StmtsNode> compileStatements(Token*& current, Token* terminator = nullptr);
 
     [[nodiscard]] std::unique_ptr<StmtsNode> compile(char const* script);
     void exec(char const* script, FILE* err = stderr);
@@ -376,7 +386,7 @@ struct ValNode : ExprNode {
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         if (val.type() == Type::FUNC) {
-            auto&& fn = *get<FuncPtr>(val.object);
+            auto&& fn = *get<func_t>(val.object);
             return {fn.stmt.get()};
         }
         return {};
@@ -384,8 +394,7 @@ struct ValNode : ExprNode {
 
     [[nodiscard]] std::string descriptor() const override {
         if (val.type() == Type::FUNC) {
-            auto&& fn = *get<FuncPtr>(val.object);
-            return fn.descriptor();
+            return get<func_t>(val.object)->descriptor();
         }
         return val.toString();
     }
@@ -492,11 +501,46 @@ struct OpTernaryNode : ExprNode {
     }
 };
 
+struct OpIndexNode : ExprNode {
+    std::unique_ptr<ExprNode> list;
+    std::unique_ptr<ExprNode> index;
+    OpIndexNode(ScriptEngine* engine, int line,
+                std::unique_ptr<ExprNode> list,
+                std::unique_ptr<ExprNode> index): ExprNode(engine, line),
+                list(std::move(list)), index(std::move(index)) {}
+
+    void push() const override {
+        list->push();
+        if (engine->jumpTarget != JumpTarget::NONE) return;
+        auto t = engine->pop();
+        auto a = std::get<list_t>(t.val().object);
+        index->push();
+        if (engine->jumpTarget != JumpTarget::NONE) { engine->pop(); return; }
+        auto b = engine->pop().val().asInt(line);
+        if (b < 0 || b >= a->size()) throw RuntimeError("list index out of bound" + at(line));
+        if (t.val_or_ref.index())
+            engine->push(&a->at(b));
+        else
+            engine->push(a->at(b));
+    }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        return {list.get(), index.get()};
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "[]";
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        return "(" + list->toString() + ")[" + index->toString() + "]";
+    }
+};
+
 struct OpInvokeNode : ExprNode {
     std::unique_ptr<ExprNode> func;
     std::vector<std::unique_ptr<ExprNode>> args;
-    OpInvokeNode(int line,
-                 ScriptEngine* engine,
+    OpInvokeNode(ScriptEngine* engine, int line,
                  std::unique_ptr<ExprNode> func,
                  std::vector<std::unique_ptr<ExprNode>> args): ExprNode(engine, line),
                  func(std::move(func)), args(std::move(args)) {}
@@ -534,6 +578,46 @@ struct OpInvokeNode : ExprNode {
             ret += arg->toString();
         }
         ret += ")";
+        return ret;
+    }
+};
+
+struct OpListNode : ExprNode {
+    std::vector<std::unique_ptr<ExprNode>> objs;
+    OpListNode(ScriptEngine* engine, int line,
+               std::vector<std::unique_ptr<ExprNode>> objs): ExprNode(engine, line),
+               objs(std::move(objs)) {}
+
+    void push() const override {
+        std::vector<Object> objects;
+        for (auto&& obj : objs) {
+            obj->push();
+            if (engine->jumpTarget != JumpTarget::NONE) return;
+            objects.push_back(engine->pop().val());
+        }
+        engine->push(Object{std::make_shared<std::vector<Object>>(std::move(objects))});
+    }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        std::vector<ExprNode*> ret;
+        for (auto&& obj : objs) {
+            ret.push_back(obj.get());
+        }
+        return ret;
+    }
+
+    [[nodiscard]] std::string descriptor() const override {
+        return "[]";
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        std::string ret = "[";
+        bool first = true;
+        for (auto&& obj : objs) {
+            if (first) { first = false; } else { ret += ", "; }
+            ret += obj->toString();
+        }
+        ret += "]";
         return ret;
     }
 };
@@ -641,7 +725,8 @@ struct WhileNode : ExprNode {
             engine->jumpTarget = JumpTarget::NONE;
             ret = engine->target;
         }
-        engine->push(ret);
+        if (engine->jumpTarget == JumpTarget::NONE)
+            engine->push(ret);
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -683,7 +768,8 @@ struct DoWhileNode : ExprNode {
             engine->jumpTarget = JumpTarget::NONE;
             ret = engine->target;
         }
-        engine->push(ret);
+        if (engine->jumpTarget == JumpTarget::NONE)
+            engine->push(ret);
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -735,7 +821,8 @@ struct ForNode : ExprNode {
             engine->jumpTarget = JumpTarget::NONE;
             ret = engine->target;
         }
-        engine->push(ret);
+        if (engine->jumpTarget == JumpTarget::NONE)
+            engine->push(ret);
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -818,10 +905,8 @@ struct TryCatchNode : ExprNode {
 };
 
 enum class TokenType {
-    PUNCTUATION, IDENTIFIER, KEYWORD, PAREN, LINEBREAK,
-    LITERAL_BOOL, LITERAL_INT, LITERAL_REAL, BRACE,
-
-    EOT // end of token
+    PUNCTUATOR, IDENTIFIER, KEYWORD, LINEBREAK,
+    LITERAL_BOOL, LITERAL_INT, LITERAL_REAL, BRACE
 };
 
 struct Token {
@@ -844,7 +929,7 @@ struct Token {
     [[nodiscard]] std::string identifier() const {
         return std::get<std::string>(parameter);
     }
-    [[nodiscard]] std::string punctuation() const {
+    [[nodiscard]] std::string punctuator() const {
         return std::get<std::string>(parameter);
     }
     [[nodiscard]] bool literal_bool() const {
@@ -856,8 +941,8 @@ struct Token {
     [[nodiscard]] real_t literal_real() const {
         return std::get<real_t>(parameter);
     }
-    static Token punctuation(std::string p) {
-        return {TokenType::PUNCTUATION, p};
+    static Token punctuator(std::string p) {
+        return {TokenType::PUNCTUATOR, p};
     }
     static Token identifier(std::string id) {
         return {TokenType::IDENTIFIER, id};
@@ -874,23 +959,26 @@ struct Token {
     static Token keyword(int keyword) {
         return {TokenType::KEYWORD, keyword};
     }
-    static Token parenLeft() {
-        return {TokenType::PAREN, 0};
-    }
-    static Token parenRight() {
-        return {TokenType::PAREN, 1};
-    }
     static Token braceLeft() {
         return {TokenType::BRACE, 0};
     }
     static Token braceRight() {
         return {TokenType::BRACE, 1};
     }
+    static Token parenLeft() {
+        return {TokenType::BRACE, 2};
+    }
+    static Token parenRight() {
+        return {TokenType::BRACE, 3};
+    }
+    static Token bracketLeft() {
+        return {TokenType::BRACE, 4};
+    }
+    static Token bracketRight() {
+        return {TokenType::BRACE, 5};
+    }
     static Token linebreak() {
         return {TokenType::LINEBREAK, 0};
-    }
-    static Token eot() {
-        return {TokenType::EOT, 0};
     }
 };
 
@@ -924,7 +1012,7 @@ struct ExternalFunctionInvocationNode : ExprNode {
     }
 
     template<size_t... I>
-    Operand eval(std::index_sequence<I...>) const;
+    Object eval(std::index_sequence<I...>) const;
 
     [[nodiscard]] std::string descriptor() const override {
         return "<external function invocation>";
@@ -932,7 +1020,7 @@ struct ExternalFunctionInvocationNode : ExprNode {
 };
 
 template<typename R, typename... Args>
-std::function<FuncPtr(ScriptEngine*)> external(std::function<R(Args...)> function) {
+std::function<func_t(ScriptEngine*)> external(std::function<R(Args...)> function) {
     static_assert(!std::is_reference_v<R>);
     static_assert((!sizeof...(Args) || ... || !std::is_reference_v<Args>));
     return [function](ScriptEngine* engine) {
@@ -943,12 +1031,13 @@ std::function<FuncPtr(ScriptEngine*)> external(std::function<R(Args...)> functio
 
 template<typename R, typename... Args>
 template<size_t... I>
-Operand ExternalFunctionInvocationNode<R, Args...>::eval(std::index_sequence<I...>) const {
+Object ExternalFunctionInvocationNode<R, Args...>::eval(std::index_sequence<I...>) const {
+    auto functor = std::bind(function, engine->findOperand(externalParameterName<I>(), 0).val().template as<Args>()...);
     if constexpr(std::is_void_v<R>) {
-        function(engine->findOperand(externalParameterName<I>(), 0).val().template as<Args>()...);
+        functor();
         return {};
     } else {
-        return Object{function(engine->findOperand(externalParameterName<I>(), 0).val().template as<Args>()...)};
+        return {functor()};
     }
 }
 

@@ -3,7 +3,6 @@
 #include <cmath>
 #include <numeric>
 #include <numbers>
-#include <ctime>
 #include <chrono>
 #include <cstdlib>
 
@@ -19,6 +18,10 @@ void division_assert(int_t b, int line) {
 
 void shift_assert(int_t b, int line) {
     if (b < 0) throw RuntimeError("negative shift count" + at(line));
+}
+
+int_t ushr(int_t lhs, int_t rhs) {
+    return int_t(std::make_unsigned_t<int_t>(lhs) >> rhs);
 }
 
 template<typename Fn>
@@ -37,15 +40,15 @@ auto simpleBinary(Fn fn) {
 }
 
 template<typename Fn>
-auto intBinary(char const* name, Fn fn, Assertion* an = noop_assert) {
-    return [name, fn, an](ExprNode* lhs, ExprNode* rhs) {
+auto intBinary(Fn fn, Assertion* an = noop_assert) {
+    return [fn, an](ExprNode* lhs, ExprNode* rhs) {
         auto* engine = lhs->engine;
         lhs->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        auto a = lhs->engine->pop().val().asIntOp(name, lhs->line);
+        auto a = lhs->engine->pop().val().asInt(lhs->line);
         rhs->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        auto b = rhs->engine->pop().val().asIntOp(name, rhs->line);
+        auto b = rhs->engine->pop().val().asInt(rhs->line);
         an(b, rhs->line);
         engine->push(Object{fn(a, b)});
     };
@@ -57,24 +60,28 @@ auto simpleAssignment(Fn fn) {
         auto* engine = lhs->engine;
         lhs->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
+        auto a = engine->pop();
         rhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) { engine->pop(); return; }
+        if (engine->jumpTarget != JumpTarget::NONE) return;
         auto b = engine->pop();
-        std::visit(fn, engine->top().ref(lhs->line)->asNumber(lhs->line), b.val().asNumber(rhs->line));
+        std::visit(fn, a.ref(lhs->line)->asNumber(lhs->line), b.val().asNumber(rhs->line));
+        engine->push(a);
     };
 }
 
 template<typename Fn>
-auto intAssignment(char const* name, Fn fn, Assertion* an = noop_assert) {
-    return [name, fn, an](ExprNode* lhs, ExprNode* rhs) {
+auto intAssignment(Fn fn, Assertion* an = noop_assert) {
+    return [fn, an](ExprNode* lhs, ExprNode* rhs) {
         auto* engine = lhs->engine;
         lhs->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
+        auto a = engine->pop();
         rhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) { engine->pop(); return; }
-        int_t b = engine->pop().val().asIntOp(name, lhs->line);
+        if (engine->jumpTarget != JumpTarget::NONE) return;
+        int_t b = engine->pop().val().asInt(lhs->line);
         an(b, rhs->line);
-        fn(engine->top().ref(lhs->line)->asIntOp(name, lhs->line), b);
+        fn(a.ref(lhs->line)->asInt(lhs->line), b);
+        engine->push(a);
     };
 }
 
@@ -86,17 +93,6 @@ const std::vector<Operator> OPERATORS[13] = {
                     if (engine->jumpTarget != JumpTarget::NONE) return;
                     fprintf(rhs->engine->out, "%s\n", engine->pop().val().toString().c_str());
                     engine->push({});
-                }},
-                {"input", [](ExprNode* rhs) {
-                    auto* engine = rhs->engine;
-                    rhs->push();
-                    if (engine->jumpTarget != JumpTarget::NONE) return;
-                    std::visit(overloaded {
-                            [engine = rhs->engine](int_t& a) { if (!fscanf(engine->in, "%lld", &a)) throw RuntimeError("illegal input as int"); },
-                            [engine = rhs->engine](real_t& a) { if (!fscanf(engine->in, "%lf", &a)) throw RuntimeError("illegal input as real"); },
-                            [line = rhs->line](FuncPtr& a) { throw RuntimeError("attempt to input a function" + at(line)); },
-                            [line = rhs->line](std::monostate& a) { throw RuntimeError("attempt to input void" + at(line)); }
-                    }, engine->top().ref(rhs->line)->object);
                 }},
                 {"throw", [](ExprNode* rhs) {
                     auto* engine = rhs->engine;
@@ -129,7 +125,7 @@ const std::vector<Operator> OPERATORS[13] = {
                     if (auto* ref = dynamic_cast<RefNode*>(lhs))
                         ref->initialize();
                     else
-                        throw RuntimeError("initialization cannot be applied to an expression");
+                        throw RuntimeError("initialization cannot be applied to an expression" + at(lhs->line));
                 }},
                 {"=",  simpleAssignment([](auto* lhs, auto* rhs) { *lhs = *rhs; })},
                 {"+=", simpleAssignment([](auto* lhs, auto* rhs) { *lhs += *rhs; })},
@@ -139,20 +135,23 @@ const std::vector<Operator> OPERATORS[13] = {
                     auto* engine = lhs->engine;
                     lhs->push();
                     if (engine->jumpTarget != JumpTarget::NONE) return;
+                    auto a  = engine->pop();
                     rhs->push();
-                    if (engine->jumpTarget != JumpTarget::NONE) { engine->pop(); return; }
+                    if (engine->jumpTarget != JumpTarget::NONE) return;
                     auto b = engine->pop();
                     std::visit(overloaded {
                             [line = rhs->line](int_t* lhs, auto* rhs) { division_assert(*rhs, line); *lhs /= *rhs; },
                             [](auto* lhs, auto* rhs) { *lhs /= *rhs; }
-                    }, engine->top().ref(lhs->line)->asNumber(lhs->line), b.val().asNumber(rhs->line));
+                    }, a.ref(lhs->line)->asNumber(lhs->line), b.val().asNumber(rhs->line));
+                    engine->push(a);
                 }},
-                {"%=", intAssignment("%=", [](int_t& lhs, int_t rhs) { lhs %= rhs; }, division_assert)},
-                {"<<=",intAssignment("<<=", [](int_t& lhs, int_t rhs) { lhs <<= rhs; }, shift_assert)},
-                {">>=",intAssignment(">>=", [](int_t& lhs, int_t rhs) { lhs >>= rhs; }, shift_assert)},
-                {"&=", intAssignment("&=", [](int_t& lhs, int_t rhs) { lhs &= rhs; })},
-                {"^=", intAssignment("^=", [](int_t& lhs, int_t rhs) { lhs ^= rhs; })},
-                {"|=", intAssignment("|=", [](int_t& lhs, int_t rhs) { lhs |= rhs; })}
+                {"%=", intAssignment([](int_t& lhs, int_t rhs) { lhs %= rhs; }, division_assert)},
+                {"<<=",intAssignment([](int_t& lhs, int_t rhs) { lhs <<= rhs; }, shift_assert)},
+                {">>=",intAssignment([](int_t& lhs, int_t rhs) { lhs >>= rhs; }, shift_assert)},
+                {">>>=",intAssignment([](int_t& lhs, int_t rhs) { lhs = ushr(lhs, rhs); }, shift_assert)},
+                {"&=", intAssignment([](int_t& lhs, int_t rhs) { lhs &= rhs; })},
+                {"^=", intAssignment([](int_t& lhs, int_t rhs) { lhs ^= rhs; })},
+                {"|=", intAssignment([](int_t& lhs, int_t rhs) { lhs |= rhs; })}
         },
         {{"||", [](ExprNode *lhs, ExprNode *rhs) {
             auto* engine = lhs->engine;
@@ -170,9 +169,9 @@ const std::vector<Operator> OPERATORS[13] = {
             engine->pop();
             rhs->push();
         }}},
-        {{"|", intBinary("|", std::bit_or<int_t>{})}},
-        {{"^", intBinary("^", std::bit_xor<int_t>{})}},
-        {{"&", intBinary("&", std::bit_and<int_t>{})}},
+        {{"|", intBinary(std::bit_or<int_t>{})}},
+        {{"^", intBinary(std::bit_xor<int_t>{})}},
+        {{"&", intBinary(std::bit_and<int_t>{})}},
         {
                 {"==", simpleBinary(std::equal_to<>{})},
                 {"!=", simpleBinary(std::not_equal_to<>{})}
@@ -184,8 +183,9 @@ const std::vector<Operator> OPERATORS[13] = {
                 {">=", simpleBinary(std::greater_equal<>{})}
         },
         {
-                {"<<", intBinary("<<", [](int_t a, int_t b) { return a << b; }, shift_assert)},
-                {">>", intBinary(">>", [](int_t a, int_t b) { return a >> b; }, shift_assert)}
+                {"<<", intBinary([](int_t lhs, int_t rhs) { return lhs << rhs; }, shift_assert)},
+                {">>", intBinary([](int_t lhs, int_t rhs) { return lhs >> rhs; }, shift_assert)},
+                {">>>",intBinary(ushr, shift_assert)}
         },
         {
                 {"+", simpleBinary(std::plus<>{})},
@@ -206,18 +206,22 @@ const std::vector<Operator> OPERATORS[13] = {
                             [](auto* lhs, auto* rhs) { return Object{*lhs / *rhs}; }
                     }, a.val().asNumber(lhs->line), b.val().asNumber(rhs->line)));
                 }},
-                {"%", intBinary("%", std::modulus<int_t>{}, division_assert)}
+                {"%", intBinary(std::modulus<int_t>{}, division_assert)}
         },
         {
                 {"++", [](ExprNode* op) {
                     auto* engine = op->engine;
                     op->push();
-                    ++engine->top().ref(op->line)->asIntOp("++", op->line);
+                    auto a = engine->pop();
+                    ++a.ref(op->line)->asInt(op->line);
+                    engine->push(a);
                 }},
                 {"--", [](ExprNode *op) {
                     auto* engine = op->engine;
                     op->push();
-                    --engine->top().ref(op->line)->asIntOp("--", op->line);
+                    auto a = engine->pop();
+                    --a.ref(op->line)->asInt(op->line);
+                    engine->push(a);
                 }},
                 {"+", [](ExprNode *op) { op->push(); }},
                 {"-", [](ExprNode *op) {
@@ -236,7 +240,7 @@ const std::vector<Operator> OPERATORS[13] = {
                     auto* engine = op->engine;
                     op->push();
                     if (engine->jumpTarget != JumpTarget::NONE) return;
-                    engine->push(Object{~engine->top().val().asIntOp("~", op->line)});
+                    engine->push(Object{~engine->top().val().asInt(op->line)});
                 }}
         },
         {
@@ -244,13 +248,13 @@ const std::vector<Operator> OPERATORS[13] = {
                     auto* engine = op->engine;
                     op->push();
                     if (engine->jumpTarget != JumpTarget::NONE) return;
-                    engine->push(Object{engine->pop().ref(op->line)->asIntOp("++", op->line)++});
+                    engine->push(Object{engine->pop().ref(op->line)->asInt(op->line)++});
                 }},
                 {"--", [](ExprNode *op) {
                     auto* engine = op->engine;
                     op->push();
                     if (engine->jumpTarget != JumpTarget::NONE) return;
-                    engine->push(Object{engine->pop().ref(op->line)->asIntOp("--", op->line)--});
+                    engine->push(Object{engine->pop().ref(op->line)->asInt(op->line)--});
                 }}
         }
 };
@@ -258,6 +262,12 @@ const std::vector<Operator> OPERATORS[13] = {
 void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("int",      [](real_t x) { return int_t(x); });
     engine->installExternalFunction("real",     [](int_t x) { return real_t(x); });
+
+    engine->installExternalFunction("readInt",  []() { int_t x; std::scanf("%lld", &x); return x; });
+    engine->installExternalFunction("readReal", []() { real_t x; std::scanf("%lf", &x); return x; });
+
+    engine->installExternalFunction("len",      [](list_t x) { return (int_t)x->size(); });
+
     engine->installExternalFunction("ceil",     ::ceil);
     engine->installExternalFunction("floor",    ::floor);
     engine->installExternalFunction("trunc",    ::trunc);
@@ -312,8 +322,8 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("lerp",     (real_t(*)(real_t, real_t, real_t))std::lerp);
 
     engine->installExternalFunction("nanos",    [] { return std::chrono::system_clock::now().time_since_epoch().count(); });
-    engine->installExternalFunction("micros",    [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000; });
-    engine->installExternalFunction("millis",    [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000'000; });
+    engine->installExternalFunction("micros",   [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000; });
+    engine->installExternalFunction("millis",   [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000'000; });
 
     {
         using namespace std::numbers;

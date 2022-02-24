@@ -101,3 +101,13 @@ _BUG 修复_
 支持了十六进制实数
 
 REPL 的作用域扩大
+
+### v1.3-alpha
+
+删除 input 运算符
+
+加入 readInt 和 readReal 函数
+
+加入无符号右移
+
+加入列表

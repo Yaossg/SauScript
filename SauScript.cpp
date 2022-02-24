@@ -23,6 +23,14 @@ namespace SauScript {
                     tokens.push_back(Token::parenRight().at(line));
                     ++current;
                     continue;
+                case '[':
+                    tokens.push_back(Token::bracketLeft().at(line));
+                    ++current;
+                    continue;
+                case ']':
+                    tokens.push_back(Token::bracketRight().at(line));
+                    ++current;
+                    continue;
                 case '{':
                     tokens.push_back(Token::braceLeft().at(line));
                     ++current;
@@ -49,7 +57,7 @@ namespace SauScript {
                 } else if (auto kw = Keyword::parse(token); kw != Keyword::NAK) {
                     tokens.push_back(Token::keyword(kw).at(line));
                 } else if (auto &&ops = opTokens(); std::find(ops.begin(), ops.end(), token) != ops.end()) {
-                    tokens.push_back(Token::punctuation(token).at(line));
+                    tokens.push_back(Token::punctuator(token).at(line));
                 } else {
                     tokens.push_back(Token::identifier(token).at(line));
                 }
@@ -58,7 +66,7 @@ namespace SauScript {
                     size_t idx;
                     auto x = std::stoull(current, &idx, 0);
                     if (current[idx] != '.' && current[idx] != 'e' && current[idx] != 'E' && current[idx] != 'p' && current[idx] != 'P') {
-                        tokens.push_back(Token::literal_int(x).at(line));
+                        tokens.push_back(Token::literal_int(int_t(x)).at(line));
                         current += idx;
                         continue;
                     }
@@ -78,7 +86,7 @@ namespace SauScript {
                     }
                 }
                 if (!token.empty()) {
-                    tokens.push_back(Token::punctuation(token).at(line));
+                    tokens.push_back(Token::punctuator(token).at(line));
                     current += token.length();
                 } else {
                     throw SyntaxError("unexpected token" + at(line));
@@ -87,7 +95,6 @@ namespace SauScript {
         }
     }
     tokens.push_back(Token::linebreak().at(line - 1));
-    tokens.push_back(Token::eot().at(line));
     return tokens;
 }
 
@@ -136,27 +143,35 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                             throw SyntaxError("stray else" + at(token.line));
                     }
                 }
-                case TokenType::BRACE:
+                default:
                     if (token == Token::braceLeft()) {
                         auto stmt = compileStatements(current);
                         if (*current != Token::braceRight())
                             throw SyntaxError("missing '}' to match '{'" + current->at());
                         ++current;
                         return stmt;
-                    }
-                case TokenType::PAREN:
-                    if (token == Token::parenLeft()) {
+                    } else if (token == Token::bracketLeft()) {
+                        std::vector<std::unique_ptr<ExprNode>> objs;
+                        while (true) {
+                            if (*current == Token::bracketRight()) break;
+                            objs.push_back(compileExpression(current));
+                            if (*current == Token::bracketRight()) break;
+                            if (*current++ != Token::punctuator(","))
+                                throw SyntaxError("unexpected token interrupt list literal" + current->at());
+                        }
+                        ++current;
+                        return std::make_unique<OpListNode>(this, token.line, std::move(objs));
+                    } else if (token == Token::parenLeft()) {
                         auto expr = compileExpression(current);
                         if (*current != Token::parenRight())
                             throw SyntaxError("missing ')' to match '('" + current->at());
                         ++current;
                         return expr;
                     }
-                default:
                     throw SyntaxError("unexpected leaf node token for expression" + token.at());
             }
         case LEVEL_UNARY_PREFIX: {
-            if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
+            if (current->type == TokenType::PUNCTUATOR && (op = findOperator(current->punctuator(), level))) {
                 int line = current++->line;
                 return std::make_unique<OpUnaryNode>(this, line, compileExpression(current, level), op);
             }
@@ -165,7 +180,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
         case LEVEL_UNARY_POSTFIX: {
             auto expr = compileExpression(current, level + 1);
             while (true) {
-                if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
+                if (current->type == TokenType::PUNCTUATOR && (op = findOperator(current->punctuator(), level))) {
                     int line = current++->line;
                     expr = std::make_unique<OpUnaryNode>(this, line, std::move(expr), op);
                 } else if (*current == Token::parenLeft()) {
@@ -175,30 +190,37 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                         if (*current == Token::parenRight()) break;
                         args.push_back(compileExpression(current));
                         if (*current == Token::parenRight()) break;
-                        if (*current++ != Token::punctuation(","))
+                        if (*current++ != Token::punctuator(","))
                             throw SyntaxError("unexpected token interrupt function invocation" + current->at());
                     }
                     ++current;
-                    expr = std::make_unique<OpInvokeNode>(line, this, std::move(expr), std::move(args));
-                } else break;
+                    expr = std::make_unique<OpInvokeNode>(this, line, std::move(expr), std::move(args));
+                } else if (*current == Token::bracketLeft()) {
+                    int line = current++->line;
+                    auto index = compileExpression(current);
+                    if (*current != Token::bracketRight())
+                        throw SyntaxError("missing ']' to match '['" + current->at());
+                    ++current;
+                    expr = std::make_unique<OpIndexNode>(this, line, std::move(expr), std::move(index));
+                } break;
             }
             return expr;
         }
         case LEVEL_ROOT: {
-            if (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
+            if (current->type == TokenType::PUNCTUATOR && (op = findOperator(current->punctuator(), level))) {
                 int line = current++->line;
                 return std::make_unique<OpUnaryNode>(this, line, compileExpression(current, level), op);
             }
             auto expr = compileExpression(current, level + 1);
-            if (current->type == TokenType::PUNCTUATION) {
-                if ((op = findOperator(current->punctuation(), level))) {
+            if (current->type == TokenType::PUNCTUATOR) {
+                if ((op = findOperator(current->punctuator(), level))) {
                     int line = current++->line;
                     return std::make_unique<OpBinaryNode>(this, line, std::move(expr), compileExpression(current, level), op);
                 }
-                if (*current == Token::punctuation("?")) {
+                if (*current == Token::punctuator("?")) {
                     int line = current++->line;
                     auto lhs = compileExpression(current, level);
-                    if (*current == Token::punctuation(":")) {
+                    if (*current == Token::punctuator(":")) {
                         auto rhs = compileExpression(++current, level);
                         return std::make_unique<OpTernaryNode>(this, line, std::move(expr), std::move(lhs), std::move(rhs));
                     } else {
@@ -210,9 +232,9 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
         }
         default: {
             auto expr = compileExpression(current, level + 1);
-            while (current->type == TokenType::PUNCTUATION && (op = findOperator(current->punctuation(), level))) {
+            while (current->type == TokenType::PUNCTUATOR && (op = findOperator(current->punctuator(), level))) {
                 int line = current++->line;
-                if (current->type == TokenType::PUNCTUATION && findOperator(current->punctuation(), LEVEL_ROOT))
+                if (current->type == TokenType::PUNCTUATOR && findOperator(current->punctuator(), LEVEL_ROOT))
                     return std::make_unique<OpBinaryNode>(this, line, std::move(expr),
                                                           compileExpression(current, LEVEL_ROOT), op);
                 expr = std::make_unique<OpBinaryNode>(this, line, std::move(expr),
@@ -312,30 +334,31 @@ std::unique_ptr<ExprNode> ScriptEngine::compileFunction(Token*& current) {
         if (current->type != TokenType::IDENTIFIER)
             throw SyntaxError("name of parameter expected" + current->at());
         std::string p_name = current++->identifier();
-        if (*current++ != Token::punctuation(":"))
+        if (*current++ != Token::punctuator(":"))
             throw SyntaxError("expected ':' after parameter name" + (--current)->at());
         Type p_type = parseType(*current++);
         parameters.push_back({p_type, p_name});
         if (*current == Token::parenRight()) break;
-        if (*current++ != Token::punctuation(","))
+        if (*current++ != Token::punctuator(","))
             throw SyntaxError("unexpected token interrupt function definition" + (--current)->at());
     }
-    if (*++current != Token::punctuation(":"))
+    if (*++current != Token::punctuator(":"))
         throw SyntaxError("expected ':' after parameter list" + current->at());
     Type return_type = parseType(*++current);
     std::unique_ptr<ExprNode> stmt;
-    if (*++current != Token::punctuation("="))
+    if (*++current != Token::punctuator("="))
         throw SyntaxError("expected '=' after return type" + current->at());
     stmt = compileExpression(++current);
     return std::make_unique<ValNode>(this, line, Object{
         std::make_shared<Function>(Function{return_type, parameters, std::move(stmt)})});
 }
 
-std::unique_ptr<StmtsNode> ScriptEngine::compileStatements(Token*& current) {
+std::unique_ptr<StmtsNode> ScriptEngine::compileStatements(Token*& current, Token* terminator) {
     std::vector<std::unique_ptr<ExprNode>> stmts;
-    while (current->type != TokenType::EOT) {
+    while (true) {
+        if (current == terminator) { break; }
         if (*current == Token::braceRight()) { break; }
-        if (current->type == TokenType::LINEBREAK) { ++current; continue; }
+        if (*current == Token::linebreak()) { ++current; continue; }
         stmts.push_back(compileExpression(current));
     }
     int line = stmts.empty() ? 0 : stmts[0]->line;
@@ -345,7 +368,7 @@ std::unique_ptr<StmtsNode> ScriptEngine::compileStatements(Token*& current) {
 std::unique_ptr<StmtsNode> ScriptEngine::compile(const char* script) {
     auto tokens = tokenize(script);
     Token* current = tokens.data();
-    return compileStatements(current);
+    return compileStatements(current, current + tokens.size());
 }
 
 void ScriptEngine::exec(const char* script, FILE* err) {
@@ -376,15 +399,18 @@ void ScriptEngine::exec(const char* script, FILE* err) {
     }
     if (!stack.empty()) {
         fprintf(err, "Memory leaked: %d\n", stack.size());
-        while (!stack.empty()) stack.pop();
+        while (!stack.empty()) {
+            fprintf(err, "Remains: %s\n", stack.top().val().toString().c_str());
+            stack.pop();
+        }
     }
     jumpTarget = JumpTarget::NONE;
 }
 
-void Object::invoke(ScriptEngine* engine, int line, const std::vector<Object> &arguments) {
-    if (!std::holds_alternative<FuncPtr>(object))
+void Object::invoke(ScriptEngine* engine, int line, const std::vector<Object> &arguments) const {
+    if (!std::holds_alternative<func_t>(object))
         throw RuntimeError("not a function" + at(line));
-    auto&& fn = *std::get<FuncPtr>(object);
+    auto&& fn = *std::get<func_t>(object);
     if (fn.parameters.size() != arguments.size())
         throw RuntimeError("wrong number of arguments" + at(line));
     ScriptScope scope(engine);
@@ -426,9 +452,25 @@ void Object::invoke(ScriptEngine* engine, int line, const std::vector<Object> &a
 
 std::string Object::toString() const {
     return std::visit(overloaded {
-            [](auto x) { return std::to_string(x); },
             [](std::monostate) { return std::string("<void>"); },
-            [](FuncPtr const& ptr) { return ptr->toString(); }
+            [](int_t x) { return std::to_string(x); },
+            [](real_t x) {
+                size_t len = std::snprintf(nullptr, 0, "%g", x);
+                std::string ret(len, '\0');
+                std::sprintf(ret.data(), "%g", x);
+                if (ret == std::to_string((int_t)x)) ret += ".0";
+                return ret;
+            },
+            [](func_t const& ptr) { return ptr->toString(); },
+            [](list_t const& ptr) {
+                bool first = true;
+                std::string ret = "[";
+                for (auto&& obj : *ptr) {
+                    if (first) { first = false; } else { ret += ", "; }
+                    ret += obj.toString();
+                }
+                return ret + "]";
+            }
     }, object);
 }
 

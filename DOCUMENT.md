@@ -1,5 +1,7 @@
 # SauScript 文档
 
+本文档面向 SauScript v1.2.4 
+
 ## 程序
 
 SauScript 是一种脚本语言，经编译成语法树之后即可执行。
