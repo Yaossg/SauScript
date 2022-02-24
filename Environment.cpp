@@ -263,8 +263,8 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("int",      [](real_t x) { return int_t(x); });
     engine->installExternalFunction("real",     [](int_t x) { return real_t(x); });
 
-    engine->installExternalFunction("readInt",  []() { int_t x; std::scanf("%lld", &x); return x; });
-    engine->installExternalFunction("readReal", []() { real_t x; std::scanf("%lf", &x); return x; });
+    engine->installExternalFunction("readInt",  [in = engine->in]() { int_t x; std::fscanf(in, "%lld", &x); return x; });
+    engine->installExternalFunction("readReal", [in = engine->in]() { real_t x; std::fscanf(in, "%lf", &x); return x; });
 
     engine->installExternalFunction("len",      [](list_t x) { return (int_t)x->size(); });
 
@@ -279,8 +279,8 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("fma",      ::fma);
     engine->installExternalFunction("min",      [](int_t a, int_t b) { return a < b ? a : b; });
     engine->installExternalFunction("max",      [](int_t a, int_t b) { return a > b ? a : b; });
-    engine->installExternalFunction("fmin",     ::fmin);
-    engine->installExternalFunction("fmax",     ::fmax);
+    engine->installExternalFunction("min",      ::fmin);
+    engine->installExternalFunction("max",      ::fmax);
 
     engine->installExternalFunction("exp",      ::exp);
     engine->installExternalFunction("exp2",     ::exp2);
@@ -293,7 +293,7 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("sqrt",     ::sqrt);
     engine->installExternalFunction("cbrt",     ::cbrt);
     engine->installExternalFunction("hypot",    ::hypot);
-    engine->installExternalFunction("hypot3",   (real_t(*)(real_t, real_t, real_t))std::hypot);
+    engine->installExternalFunction("hypot",    (real_t(*)(real_t, real_t, real_t))std::hypot);
 
     engine->installExternalFunction("sin",      ::sin);
     engine->installExternalFunction("cos",      ::cos);
@@ -318,7 +318,7 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("gcd",      std::gcd<int_t, int_t>);
     engine->installExternalFunction("lcm",      std::lcm<int_t, int_t>);
     engine->installExternalFunction("midpoint", (int_t(*)(int_t, int_t))std::midpoint);
-    engine->installExternalFunction("fmidpoint",(real_t(*)(real_t, real_t))std::midpoint);
+    engine->installExternalFunction("midpoint", (real_t(*)(real_t, real_t))std::midpoint);
     engine->installExternalFunction("lerp",     (real_t(*)(real_t, real_t, real_t))std::lerp);
 
     engine->installExternalFunction("nanos",    [] { return std::chrono::system_clock::now().time_since_epoch().count(); });
@@ -339,10 +339,6 @@ void installEnvironment(ScriptEngine* engine) {
         engine->global()["egamma"]      = {egamma};
         engine->global()["phi"]         = {phi};
     }
-
-    engine->installExternalFunction("counter",  [i = int_t()]() mutable { return i++; });
-
-    engine->global()["__cplusplus"]     = {__cplusplus};
 }
 
 }

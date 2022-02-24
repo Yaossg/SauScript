@@ -94,7 +94,8 @@ namespace SauScript {
             }
         }
     }
-    tokens.push_back(Token::linebreak().at(line - 1));
+    tokens.push_back(Token::linebreak().at(line));
+    tokens.push_back(Token::terminator().at(line));
     return tokens;
 }
 
@@ -143,6 +144,8 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                             throw SyntaxError("stray else" + at(token.line));
                     }
                 }
+                case TokenType::LINEBREAK:
+                    throw RuntimeError("unexpected linebreak" + at(token.line));
                 default:
                     if (token == Token::braceLeft()) {
                         auto stmt = compileStatements(current);
@@ -236,7 +239,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                 int line = current++->line;
                 if (current->type == TokenType::PUNCTUATOR && findOperator(current->punctuator(), LEVEL_ROOT))
                     return std::make_unique<OpBinaryNode>(this, line, std::move(expr),
-                                                          compileExpression(current, LEVEL_ROOT), op);
+                                                          compileExpression(current), op);
                 expr = std::make_unique<OpBinaryNode>(this, line, std::move(expr),
                                                       compileExpression(current, level + 1), op);
             }
@@ -353,10 +356,10 @@ std::unique_ptr<ExprNode> ScriptEngine::compileFunction(Token*& current) {
         std::make_shared<Function>(Function{return_type, parameters, std::move(stmt)})});
 }
 
-std::unique_ptr<StmtsNode> ScriptEngine::compileStatements(Token*& current, Token* terminator) {
+std::unique_ptr<StmtsNode> ScriptEngine::compileStatements(Token*& current) {
     std::vector<std::unique_ptr<ExprNode>> stmts;
     while (true) {
-        if (current == terminator) { break; }
+        if (*current == Token::terminator()) { break; }
         if (*current == Token::braceRight()) { break; }
         if (*current == Token::linebreak()) { ++current; continue; }
         stmts.push_back(compileExpression(current));
@@ -368,7 +371,9 @@ std::unique_ptr<StmtsNode> ScriptEngine::compileStatements(Token*& current, Toke
 std::unique_ptr<StmtsNode> ScriptEngine::compile(const char* script) {
     auto tokens = tokenize(script);
     Token* current = tokens.data();
-    return compileStatements(current, current + tokens.size());
+    auto stmts = compileStatements(current);
+    if (*current != Token::terminator()) throw RuntimeError("stray tokens" + at(current->line));
+    return stmts;
 }
 
 void ScriptEngine::exec(const char* script, FILE* err) {
@@ -407,33 +412,78 @@ void ScriptEngine::exec(const char* script, FILE* err) {
     jumpTarget = JumpTarget::NONE;
 }
 
-void Object::invoke(ScriptEngine* engine, int line, const std::vector<Object> &arguments) const {
-    if (!std::holds_alternative<func_t>(object))
-        throw RuntimeError("not a function" + at(line));
-    auto&& fn = *std::get<func_t>(object);
-    if (fn.parameters.size() != arguments.size())
-        throw RuntimeError("wrong number of arguments" + at(line));
+void Object::invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const {
+    func_t fn;
+    switch (type()) {
+        case Type::FUNC: {
+            fn = std::get<func_t>(object);
+            if (fn->parameters.size() != arguments.size())
+                throw RuntimeError("expected " + std::to_string(fn->parameters.size()) + "argument(s) but got "
+                    + std::to_string(arguments.size()) + at(line));
+            for (int i = 0; i < arguments.size(); ++i) {
+                auto&& parameter = fn->parameters[i];
+                auto&& argument = arguments[i];
+                if (!(parameter.type == argument.type() || argument.type() == Type::INT && parameter.type == Type::REAL))
+                    throw RuntimeError("mismatched type of the " + std::to_string(i + 1) + "th argument, expected "
+                        + parameter.type_name() + " but got " + argument.type_name() + at(line));
+            }
+        } break;
+        case Type::LIST: {
+            std::vector<func_t> candidates;
+            int least_promoted = arguments.size();
+            for (auto&& obj : *std::get<list_t>(object)) {
+                if (obj.type() != Type::FUNC) goto mismatch;
+                if (func_t candidate = get<func_t>(obj.object); candidate->parameters.size() == arguments.size()) {
+                    int promoted = 0;
+                    for (int i = 0; i < arguments.size(); ++i) {
+                        auto&& parameter = candidate->parameters[i];
+                        auto&& argument = arguments[i];
+                        if (argument.type() == Type::INT && parameter.type == Type::REAL) {
+                            ++promoted;
+                        } else if (parameter.type != argument.type()) {
+                            goto mismatch;
+                        }
+                    }
+                    if (promoted < least_promoted) {
+                        least_promoted = promoted;
+                        candidates.clear();
+                        candidates.push_back(candidate);
+                    } else if (promoted == least_promoted) {
+                        candidates.push_back(candidate);
+                    }
+                }
+                mismatch: ;
+            }
+            if (candidates.empty())
+                throw RuntimeError("no function is matched in the set of overloads" + at(line));
+            if (candidates.size() > 1)
+                throw RuntimeError("multiple functions are matched in the set of overloads" + at(line));
+            fn = candidates.front();
+        } break;
+        default:
+            throw RuntimeError("not invocable" + at(line));
+    }
     ScriptScope scope(engine);
     for (int i = 0; i < arguments.size(); ++i) {
-        auto&& parameter = fn.parameters[i];
+        auto&& parameter = fn->parameters[i];
         auto&& argument = arguments[i];
-        if (parameter.type == Type::REAL && argument.type() == Type::INT) {
+        if (argument.type() == Type::INT && parameter.type == Type::REAL) {
             engine->local()[parameter.name] = argument.promote(line);
         } else if (parameter.type == argument.type()) {
             engine->local()[parameter.name] = argument;
         } else {
-            throw RuntimeError("wrong type of the " + std::to_string(i + 1) + "th argument" + at(line));
+            throw RuntimeError("Assertion failed");
         }
     }
-    fn.stmt->push();
+    fn->stmt->push();
     switch (engine->jumpTarget) {
         case JumpTarget::RETURN: {
             engine->jumpTarget = JumpTarget::NONE;
             int line = engine->jumpFrom;
             Object returned = engine->target;
-            if (returned.type() == Type::INT && fn.returnType == Type::REAL) {
+            if (returned.type() == Type::INT && fn->returnType == Type::REAL) {
                 engine->push(returned.promote(line));
-            } else if (returned.type() == fn.returnType) {
+            } else if (returned.type() == fn->returnType) {
                 engine->push(returned);
             } else {
                 throw RuntimeError("invalid return type" + at(line));

@@ -89,7 +89,7 @@ using list_t = std::shared_ptr<std::vector<Object>>;
 
 template<typename T>
 constexpr Type parseType() {
-    if constexpr(std::is_void_v<T>) {
+    if constexpr(std::is_void_v<T> || std::is_same_v<T, std::monostate>) {
         return Type::VOID;
     } else if constexpr(std::is_integral_v<T>) {
         return Type::INT;
@@ -105,6 +105,14 @@ constexpr Type parseType() {
 struct Parameter {
     Type type;
     std::string name;
+
+    [[nodiscard]] std::string type_name() const {
+        return std::string(nameOf(type));
+    }
+
+    [[nodiscard]] std::string toString() const {
+        return name + ": " + type_name();
+    }
 };
 
 struct Function {
@@ -115,11 +123,9 @@ struct Function {
     [[nodiscard]] std::string descriptor() const {
         std::string ret = "function(";
         bool first = true;
-        for (auto&& [type, name] : parameters) {
+        for (auto&& parameter : parameters) {
             if (first) { first = false; } else { ret += ", "; }
-            ret += name;
-            ret += ": ";
-            ret += nameOf(type);
+            ret += parameter.toString();
         }
         ret += "): ";
         ret += nameOf(returnType);
@@ -141,27 +147,27 @@ struct Object {
     }
 
     [[nodiscard]] bool asBool(int line) const {
-        if (std::holds_alternative<int_t>(object))
+        if (type() == Type::INT)
             return std::get<int_t>(object) != 0;
         throw RuntimeError("expected int as bool but got " + type_name() + at(line));
     }
 
     [[nodiscard]] int_t& asInt(int line) {
-        if (std::holds_alternative<int_t>(object))
+        if (type() == Type::INT)
             return std::get<int_t>(object);
         throw RuntimeError("expected int but got " + type_name() + at(line));
     }
 
     [[nodiscard]] std::variant<int_t*, real_t*> asNumber(int line) {
-        switch (object.index()) {
-            case 1: return &std::get<1>(object);
-            case 2: return &std::get<2>(object);
+        switch (type()) {
+            case Type::INT: return &std::get<int_t>(object);
+            case Type::REAL: return &std::get<real_t>(object);
         }
         throw RuntimeError("expected number but got " + type_name() + at(line));
     }
 
     [[nodiscard]] Object promote(int line) const {
-        if (std::holds_alternative<int_t>(object))
+        if (type() == Type::INT)
             return Object{(real_t)std::get<int_t>(object)};
         throw RuntimeError("invalid promotion" + at(line));
     }
@@ -210,6 +216,7 @@ struct Operand {
 // 10 multiplication
 // 11 unary prefix
 // 12 postfix
+// 13 primary expression
 
 constexpr int LEVEL_ROOT = 0;
 constexpr int LEVEL_UNARY_PREFIX = 11;
@@ -308,7 +315,22 @@ struct ScriptEngine {
 
     template<typename Fn>
     void installExternalFunction(std::string const& name, Fn fn) {
-        global()[name] = Object{external(std::function{fn})(this)};
+        Object wrapped{external(std::function{fn})(this)};
+        if (!global().contains(name)) {
+            global()[name] = wrapped;
+        } else {
+            switch (global()[name].type()) {
+                case Type::FUNC:
+                    global()[name] = {std::make_shared<std::vector<Object>>(
+                            std::vector<Object>{global()[name], wrapped})};
+                    break;
+                case Type::LIST:
+                    get<list_t>(global()[name].object)->push_back(wrapped);
+                    break;
+                default:
+                    throw RuntimeError("Assertion failed");
+            }
+        }
     }
 
     Operand findOperand(std::string const& name, int line);
@@ -320,7 +342,7 @@ struct ScriptEngine {
     [[nodiscard]] std::unique_ptr<ExprNode> compileIfElse(Token*& current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileTryCatch(Token*& current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileFunction(Token*& current);
-    [[nodiscard]] std::unique_ptr<StmtsNode> compileStatements(Token*& current, Token* terminator = nullptr);
+    [[nodiscard]] std::unique_ptr<StmtsNode> compileStatements(Token*& current);
 
     [[nodiscard]] std::unique_ptr<StmtsNode> compile(char const* script);
     void exec(char const* script, FILE* err = stderr);
@@ -906,7 +928,9 @@ struct TryCatchNode : ExprNode {
 
 enum class TokenType {
     PUNCTUATOR, IDENTIFIER, KEYWORD, LINEBREAK,
-    LITERAL_BOOL, LITERAL_INT, LITERAL_REAL, BRACE
+    LITERAL_BOOL, LITERAL_INT, LITERAL_REAL, BRACE,
+
+    TERMINATOR
 };
 
 struct Token {
@@ -979,6 +1003,9 @@ struct Token {
     }
     static Token linebreak() {
         return {TokenType::LINEBREAK, 0};
+    }
+    static Token terminator() {
+        return {TokenType::TERMINATOR, 0};
     }
 };
 
