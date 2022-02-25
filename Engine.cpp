@@ -2,6 +2,34 @@
 
 namespace SauScript {
 
+bool skipLineBreak(char const*& current, bool strict, int& line) {
+    switch (*current) {
+        case '#':
+            while (*current && *current != '\n') ++current;
+            if (*current == '\n')
+                case '\n': ++current;
+            ++line;
+            return true;
+        case ';':
+            if (strict) return false;
+            skipLineBreak(++current, strict, line);
+            return true;
+    }
+    return false;
+}
+
+bool isIdentifierStart(char ch) {
+    return std::isalpha(ch) || ch == '_' || ch == '$';
+}
+
+bool isIdentifierContinue(char ch) {
+    return std::isalnum(ch) || ch == '_' || ch == '$';
+}
+
+bool isNumberStart(char ch) {
+    return std::isdigit(ch);
+}
+
 [[nodiscard]] auto tokenize(char const* current) {
     std::vector<Token> tokens;
     int line = 1;
@@ -56,7 +84,7 @@ namespace SauScript {
                     tokens.push_back(Token::literal_real(1.0 / 0.0).at(line));
                 } else if (auto kw = Keyword::parse(token); kw != Keyword::NAK) {
                     tokens.push_back(Token::keyword(kw).at(line));
-                } else if (auto &&ops = opTokens(); std::find(ops.begin(), ops.end(), token) != ops.end()) {
+                } else if (auto &&ops = Operators::tokens(); std::find(ops.begin(), ops.end(), token) != ops.end()) {
                     tokens.push_back(Token::punctuator(token).at(line));
                 } else {
                     tokens.push_back(Token::identifier(token).at(line));
@@ -80,7 +108,7 @@ namespace SauScript {
                 }
             } else {
                 std::string token;
-                for (auto &&op: opTokens()) {
+                for (auto &&op: Operators::tokens()) {
                     if (std::string_view{current}.starts_with(op)) {
                         if (op.length() > token.length()) token = op;
                     }
@@ -107,9 +135,9 @@ Operand ScriptEngine::findOperand(const std::string& name, int line) {
     throw RuntimeError("reference to undefined variable '" + name + "'" + at(line));
 }
 
-std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level = LEVEL_ROOT) {
+std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level = Operators::LEVEL_ROOT) {
     switch (Operator const* op; level) {
-        case LEVEL_PRIMARY:
+        case Operators::LEVEL_PRIMARY:
             switch (auto token = *current++; token.type) {
                 case TokenType::LITERAL_BOOL:
                     return std::make_unique<ValNode>(this, token.line, Object{token.literal_bool()});
@@ -163,7 +191,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                                 throw SyntaxError("unexpected token interrupt list literal" + current->at());
                         }
                         ++current;
-                        return std::make_unique<OpListNode>(this, token.line, std::move(objs));
+                        return std::make_unique<ListLiteralNode>(this, token.line, std::move(objs));
                     } else if (token == Token::parenLeft()) {
                         auto expr = compileExpression(current);
                         if (*current != Token::parenRight())
@@ -173,19 +201,19 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                     }
                     throw SyntaxError("unexpected leaf node token for expression" + token.at());
             }
-        case LEVEL_UNARY_PREFIX: {
-            if (current->type == TokenType::PUNCTUATOR && (op = findOperator(current->punctuator(), level))) {
+        case Operators::LEVEL_PREFIX: {
+            if (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {
                 int line = current++->line;
                 return std::make_unique<OpUnaryNode>(this, line, compileExpression(current, level), op);
             }
             return compileExpression(current, level + 1);
         }
-        case LEVEL_UNARY_POSTFIX: {
+        case Operators::LEVEL_POSTFIX: {
             auto expr = compileExpression(current, level + 1);
             while (true) {
-                if (current->type == TokenType::PUNCTUATOR && (op = findOperator(current->punctuator(), level))) {
+                if (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {
                     int line = current++->line;
-                    expr = std::make_unique<OpUnaryNode>(this, line, std::move(expr), op);
+                    expr = std::make_unique<OpUnaryNode>(this, line, std::move(expr), op, true);
                 } else if (*current == Token::parenLeft()) {
                     int line = current++->line;
                     std::vector<std::unique_ptr<ExprNode>> args;
@@ -209,14 +237,14 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
             }
             return expr;
         }
-        case LEVEL_ROOT: {
-            if (current->type == TokenType::PUNCTUATOR && (op = findOperator(current->punctuator(), level))) {
+        case Operators::LEVEL_ROOT: {
+            if (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {
                 int line = current++->line;
                 return std::make_unique<OpUnaryNode>(this, line, compileExpression(current, level), op);
             }
             auto expr = compileExpression(current, level + 1);
             if (current->type == TokenType::PUNCTUATOR) {
-                if ((op = findOperator(current->punctuator(), level))) {
+                if ((op = Operators::find(current->punctuator(), level))) {
                     int line = current++->line;
                     return std::make_unique<OpBinaryNode>(this, line, std::move(expr), compileExpression(current, level), op);
                 }
@@ -235,9 +263,9 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
         }
         default: {
             auto expr = compileExpression(current, level + 1);
-            while (current->type == TokenType::PUNCTUATOR && (op = findOperator(current->punctuator(), level))) {
+            while (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {
                 int line = current++->line;
-                if (current->type == TokenType::PUNCTUATOR && findOperator(current->punctuator(), LEVEL_ROOT))
+                if (current->type == TokenType::PUNCTUATOR && Operators::find(current->punctuator(), Operators::LEVEL_ROOT))
                     return std::make_unique<OpBinaryNode>(this, line, std::move(expr),
                                                           compileExpression(current), op);
                 expr = std::make_unique<OpBinaryNode>(this, line, std::move(expr),
@@ -339,15 +367,15 @@ std::unique_ptr<ExprNode> ScriptEngine::compileFunction(Token*& current) {
         std::string p_name = current++->identifier();
         if (*current++ != Token::punctuator(":"))
             throw SyntaxError("expected ':' after parameter name" + (--current)->at());
-        Type p_type = parseType(*current++);
+        Type p_type = current++->parseType();
         parameters.push_back({p_type, p_name});
         if (*current == Token::parenRight()) break;
         if (*current++ != Token::punctuator(","))
             throw SyntaxError("unexpected token interrupt function definition" + (--current)->at());
     }
     if (*++current != Token::punctuator(":"))
-        throw SyntaxError("expected ':' after parameter list" + current->at());
-    Type return_type = parseType(*++current);
+        throw SyntaxError("expected ': return-type' after parameter list" + current->at());
+    Type return_type = (++current)->parseType();
     std::unique_ptr<ExprNode> stmt;
     if (*++current != Token::punctuator("="))
         throw SyntaxError("expected '=' after return type" + current->at());
@@ -412,123 +440,4 @@ void ScriptEngine::exec(const char* script, FILE* err) {
     jumpTarget = JumpTarget::NONE;
 }
 
-void Object::invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const {
-    func_t fn;
-    switch (type()) {
-        case Type::FUNC: {
-            fn = std::get<func_t>(object);
-            if (fn->parameters.size() != arguments.size())
-                throw RuntimeError("expected " + std::to_string(fn->parameters.size()) + "argument(s) but got "
-                    + std::to_string(arguments.size()) + at(line));
-            for (int i = 0; i < arguments.size(); ++i) {
-                auto&& parameter = fn->parameters[i];
-                auto&& argument = arguments[i];
-                if (!(parameter.type == argument.type() || argument.type() == Type::INT && parameter.type == Type::REAL))
-                    throw RuntimeError("mismatched type of the " + std::to_string(i + 1) + "th argument, expected "
-                        + parameter.type_name() + " but got " + argument.type_name() + at(line));
-            }
-        } break;
-        case Type::LIST: {
-            std::vector<func_t> candidates;
-            int least_promoted = arguments.size();
-            for (auto&& obj : *std::get<list_t>(object)) {
-                if (obj.type() != Type::FUNC) goto mismatch;
-                if (func_t candidate = get<func_t>(obj.object); candidate->parameters.size() == arguments.size()) {
-                    int promoted = 0;
-                    for (int i = 0; i < arguments.size(); ++i) {
-                        auto&& parameter = candidate->parameters[i];
-                        auto&& argument = arguments[i];
-                        if (argument.type() == Type::INT && parameter.type == Type::REAL) {
-                            ++promoted;
-                        } else if (parameter.type != argument.type()) {
-                            goto mismatch;
-                        }
-                    }
-                    if (promoted < least_promoted) {
-                        least_promoted = promoted;
-                        candidates.clear();
-                        candidates.push_back(candidate);
-                    } else if (promoted == least_promoted) {
-                        candidates.push_back(candidate);
-                    }
-                }
-                mismatch: ;
-            }
-            if (candidates.empty())
-                throw RuntimeError("no function is matched in the set of overloads" + at(line));
-            if (candidates.size() > 1)
-                throw RuntimeError("multiple functions are matched in the set of overloads" + at(line));
-            fn = candidates.front();
-        } break;
-        default:
-            throw RuntimeError("not invocable" + at(line));
-    }
-    ScriptScope scope(engine);
-    for (int i = 0; i < arguments.size(); ++i) {
-        auto&& parameter = fn->parameters[i];
-        auto&& argument = arguments[i];
-        if (argument.type() == Type::INT && parameter.type == Type::REAL) {
-            engine->local()[parameter.name] = argument.promote(line);
-        } else if (parameter.type == argument.type()) {
-            engine->local()[parameter.name] = argument;
-        } else {
-            throw RuntimeError("Assertion failed");
-        }
-    }
-    fn->stmt->push();
-    switch (engine->jumpTarget) {
-        case JumpTarget::RETURN: {
-            engine->jumpTarget = JumpTarget::NONE;
-            int line = engine->jumpFrom;
-            Object returned = engine->target;
-            if (returned.type() == Type::INT && fn->returnType == Type::REAL) {
-                engine->push(returned.promote(line));
-            } else if (returned.type() == fn->returnType) {
-                engine->push(returned);
-            } else {
-                throw RuntimeError("invalid return type" + at(line));
-            }
-        }
-        case JumpTarget::NONE:
-        default:
-        case JumpTarget::THROW:
-            return;
-        case JumpTarget::BREAK:
-            throw RuntimeError("Wild break jump" + at(engine->jumpFrom));
-        case JumpTarget::CONTINUE:
-            throw RuntimeError("Wild continue jump" + at(engine->jumpFrom));
-    }
-}
-
-std::string Object::toString() const {
-    return std::visit(overloaded {
-            [](std::monostate) { return std::string("<void>"); },
-            [](int_t x) { return std::to_string(x); },
-            [](real_t x) {
-                size_t len = std::snprintf(nullptr, 0, "%g", x);
-                std::string ret(len, '\0');
-                std::sprintf(ret.data(), "%g", x);
-                if (ret == std::to_string((int_t)x)) ret += ".0";
-                return ret;
-            },
-            [](func_t const& ptr) { return ptr->toString(); },
-            [](list_t const& ptr) {
-                bool first = true;
-                std::string ret = "[";
-                for (auto&& obj : *ptr) {
-                    if (first) { first = false; } else { ret += ", "; }
-                    ret += obj.toString();
-                }
-                return ret + "]";
-            }
-    }, object);
-}
-
-std::string Function::toString() const {
-    std::string ret = descriptor();
-    ret += " = {";
-    ret += stmt->toString();
-    ret += "}";
-    return ret;
-}
 }
