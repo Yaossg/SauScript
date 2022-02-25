@@ -157,11 +157,11 @@ struct OpIndexNode : ExprNode {
         index->push();
         if (engine->jumpTarget != JumpTarget::NONE) { engine->pop(); return; }
         auto b = engine->pop().val().asInt(line);
-        if (b < 0 || b >= a->size()) throw RuntimeError("list index access out of bound" + at(line));
+        if (b < 0 || b >= a->objs.size()) throw RuntimeError("list index access out of bound" + at(line));
         if (t.val_or_ref.index())
-            engine->push(&a->at(b));
+            engine->push(&a->objs.at(b));
         else
-            engine->push(a->at(b));
+            engine->push(a->objs.at(b));
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -227,7 +227,7 @@ struct ListLiteralNode : ExprNode {
             if (engine->jumpTarget != JumpTarget::NONE) return;
             objects.push_back(engine->pop().val());
         }
-        engine->push(Object{std::make_shared<std::vector<Object>>(std::move(objects))});
+        engine->push(Object{std::make_shared<List>(std::move(objects))});
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {

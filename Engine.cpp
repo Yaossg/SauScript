@@ -103,8 +103,12 @@ bool isNumberStart(char ch) {
                     size_t idx;
                     tokens.push_back(Token::literal_real(std::stod(current, &idx)).at(line));
                     current += idx;
+                    if (*(current - 1) == '.')
+                        throw SyntaxError("use suffix '.0' to hint number's type to avoid ambiguity with dot operator" + at(line));
+                } catch (SyntaxError&) {
+                    throw;
                 } catch (...) {
-                    throw RuntimeError("invalid literal number" + at(line));
+                    throw SyntaxError("invalid literal number" + at(line));
                 }
             } else {
                 std::string token;
@@ -199,7 +203,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                         ++current;
                         return expr;
                     }
-                    throw SyntaxError("unexpected leaf node token for expression" + token.at());
+                    throw SyntaxError("unexpected token" + token.at());
             }
         case Operators::LEVEL_PREFIX: {
             if (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {
@@ -211,7 +215,23 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
         case Operators::LEVEL_POSTFIX: {
             auto expr = compileExpression(current, level + 1);
             while (true) {
-                if (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {
+                if (*current == Token::punctuator(".")) {
+                    auto id = *++current;
+                    if (id.type != TokenType::IDENTIFIER) throw SyntaxError("id-expression is expected after '.'" + at(id.line));
+                    if (*++current != Token::parenLeft()) throw SyntaxError("expected member function invocation" + at(id.line));
+                    std::vector<std::unique_ptr<ExprNode>> args;
+                    args.push_back(std::move(expr));
+                    ++current;
+                    while (true) {
+                        if (*current == Token::parenRight()) break;
+                        args.push_back(compileExpression(current));
+                        if (*current == Token::parenRight()) break;
+                        if (*current++ != Token::punctuator(","))
+                            throw SyntaxError("unexpected token interrupt function invocation" + current->at());
+                    }
+                    ++current;
+                    expr = std::make_unique<OpInvokeNode>(this, id.line, std::make_unique<RefNode>(this, id.line, id.identifier()), std::move(args));
+                } else if (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {
                     int line = current++->line;
                     expr = std::make_unique<OpUnaryNode>(this, line, std::move(expr), op, true);
                 } else if (*current == Token::parenLeft()) {
@@ -240,12 +260,14 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
         case Operators::LEVEL_ROOT: {
             if (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {
                 int line = current++->line;
+                if (op->isBinary()) throw SyntaxError("binary operator is used as unary" + at(line));
                 return std::make_unique<OpUnaryNode>(this, line, compileExpression(current, level), op);
             }
             auto expr = compileExpression(current, level + 1);
             if (current->type == TokenType::PUNCTUATOR) {
                 if ((op = Operators::find(current->punctuator(), level))) {
                     int line = current++->line;
+                    if (!op->isBinary()) throw SyntaxError("unary operator is used as binary" + at(line));
                     return std::make_unique<OpBinaryNode>(this, line, std::move(expr), compileExpression(current, level), op);
                 }
                 if (*current == Token::punctuator("?")) {

@@ -9,20 +9,54 @@
 namespace SauScript {
 
 void installEnvironment(ScriptEngine* engine) {
+    engine->installExternalFunction("identity", [](Object object) { return object; });
+
     engine->installExternalFunction("int",      [](real_t x) { return int_t(x); });
     engine->installExternalFunction("real",     [](int_t x) { return real_t(x); });
 
-    engine->installExternalFunction("readInt",  [in = engine->in]() { int_t x; std::fscanf(in, "%lld", &x); return x; });
-    engine->installExternalFunction("readReal", [in = engine->in]() { real_t x; std::fscanf(in, "%lf", &x); return x; });
+    engine->installExternalFunction("readInt",  [in = engine->in]() {
+        int_t x; if (!std::fscanf(in, "%lld", &x)) throw RuntimeError("invalid int input"); return x;
+    });
+    engine->installExternalFunction("readReal", [in = engine->in]() {
+        real_t x; if (!std::fscanf(in, "%lf", &x)) throw RuntimeError("invalid real input"); return x;
+    });
 
-    engine->installExternalFunction("len",      [](list_t x) { return (int_t)x->size(); });
+    engine->installExternalFunction("copy",     [](list_t list) { return std::make_shared<List>(list->objs); });
+    engine->installExternalFunction("empty",    [](list_t list) { return (int_t)list->objs.empty(); });
+    engine->installExternalFunction("size",     [](list_t list) { return (int_t)list->objs.size(); });
+    engine->installExternalFunction("push",     [](list_t list, Object obj) { list->objs.push_back(obj); });
+    engine->installExternalFunction("pop",      [](list_t list) { list->objs.pop_back(); });
+    engine->installExternalFunction("front",    [](list_t list) { return list->objs.front(); });
+    engine->installExternalFunction("back",     [](list_t list) { return list->objs.back(); });
+    engine->installExternalFunction("clear",    [](list_t list) { list->objs.clear(); });
+    engine->installExternalFunction("addAll",   [](list_t list, list_t objs) {
+        if (list.get() == objs.get()) {
+            size_t sz = list->objs.size();
+            for (size_t i = 0; i < sz; ++i) list->objs.push_back(list->objs.at(i));
+        } else for (auto&& obj : objs->objs) list->objs.push_back(obj);
+    });
+    engine->installExternalFunction("insert",   [](list_t list, int_t index, Object obj) {
+        if (index < 0 || index > list->objs.size()) throw RuntimeError("[List::insert]: index out of bound");
+        list->objs.insert(list->objs.begin() + index, obj);
+    });
+    engine->installExternalFunction("erase",    [](list_t list, int_t index) {
+        if (index < 0 || index >= list->objs.size()) throw RuntimeError("[List::erase]: index out of bound");
+        list->objs.erase(list->objs.begin() + index);
+    });
+    engine->installExternalFunction("reverse",  [](list_t list) { std::reverse(list->objs.begin(), list->objs.end()); });
+    engine->installExternalFunction("sort",     [engine](list_t list, func_t comparator) {
+        std::sort(list->objs.begin(), list->objs.end(), [engine, &comparator](Object const& a, Object const& b) {
+            comparator->invoke(engine, 0, {a, b});
+            return engine->pop().val().asBool(0);
+        });
+    });
 
     engine->installExternalFunction("ceil",     ::ceil);
     engine->installExternalFunction("floor",    ::floor);
     engine->installExternalFunction("trunc",    ::trunc);
     engine->installExternalFunction("round",    ::llround);
     engine->installExternalFunction("abs",      ::llabs);
-    engine->installExternalFunction("fabs",     ::fabs);
+    engine->installExternalFunction("abs",      ::fabs);
     engine->installExternalFunction("fmod",     ::fmod);
     engine->installExternalFunction("remainder",::remainder);
     engine->installExternalFunction("fma",      ::fma);

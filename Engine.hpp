@@ -9,7 +9,7 @@ namespace SauScript {
 template<typename R, typename... Args>
 std::function<func_t(ScriptEngine *)> external(std::function<R(Args...)> function);
 
-void installEnvironment(ScriptEngine *engine);
+void installEnvironment(ScriptEngine *list);
 
 enum class JumpTarget {
     NONE, CONTINUE, BREAK, RETURN, THROW
@@ -91,11 +91,10 @@ void ScriptEngine::installExternalFunction(const std::string &name, Fn fn) {
     } else {
         switch (global()[name].type()) {
             case Type::FUNC:
-                global()[name] = {std::make_shared<std::vector<Object>>(
-                        std::vector<Object>{global()[name], wrapped})};
+                global()[name] = {std::make_shared<List>(List{global()[name], wrapped})};
                 break;
             case Type::LIST:
-                get<list_t>(global()[name].object)->push_back(wrapped);
+                get<list_t>(global()[name].object)->objs.push_back(wrapped);
                 break;
             default:
                 throw RuntimeError("Assertion failed");

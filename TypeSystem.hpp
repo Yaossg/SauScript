@@ -4,22 +4,39 @@
 
 namespace SauScript {
 
-static std::string_view TYPE_NAMES[] = {"void", "int", "real", "func", "list"};
+static std::string_view TYPE_NAMES[] = {"void", "int", "real", "func", "list", "any"};
 
 enum class Type : size_t {
     VOID, INT, REAL, FUNC, LIST,
-
-    NAT // not a type
+    ANY, // as parameter or return type
+    NAT  // not a type
 };
 
 inline std::string_view nameOf(Type type) {
     return TYPE_NAMES[(size_t) type];
 }
 
+struct List {
+    std::vector<Object> objs;
+    mutable bool mark = false;
+    List() = default;
+    List(std::vector<Object> objs): objs(std::move(objs)) {}
+    List(std::initializer_list<Object> objs): objs(objs) {}
+    struct Guard {
+        List const* list;
+        explicit Guard(List const* list): list(list) { list->mark = true; }
+        ~Guard() { list->mark = false; }
+    };
+
+    void invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const;
+
+    [[nodiscard]] std::string toString() const;
+};
+
 using int_t = long long;
 using real_t = double;
 using func_t = std::shared_ptr<Function>;
-using list_t = std::shared_ptr<std::vector<Object>>;
+using list_t = std::shared_ptr<List>;
 
 template<typename T>
 constexpr Type parseType() {
@@ -33,6 +50,8 @@ constexpr Type parseType() {
         return Type::FUNC;
     } else if constexpr(std::is_same_v<T, list_t>) {
         return Type::LIST;
+    } else if constexpr(std::is_same_v<T, Object>) {
+        return Type::ANY;
     } else throw SyntaxError("unsupported external type");
 }
 
@@ -56,6 +75,7 @@ struct Function {
 
     [[nodiscard]] std::string descriptor() const;
     [[nodiscard]] std::string toString() const;
+    void invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const;
 };
 
 template<size_t I>
@@ -111,7 +131,11 @@ struct Object {
 
     template<typename T>
     [[nodiscard]] T as() const {
-        return std::get<(size_t)parseType<T>()>(object);
+        if constexpr(std::is_same_v<T, Object>) {
+            return *this;
+        } else {
+            return std::get<(size_t) parseType<T>()>(object);
+        }
     }
 };
 
