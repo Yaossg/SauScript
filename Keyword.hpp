@@ -4,9 +4,9 @@
 
 namespace SauScript::Keyword {
 const std::string_view KW_TOKENS[] =
-        {"while", "do", "if", "else", "try", "catch", "break", "continue", "for", "function"};
+        {"while", "do", "if", "else", "try", "catch", "break", "continue", "for", "fn"};
 enum {
-    WHILE, DO, IF, ELSE, TRY, CATCH, BREAK, CONTINUE, FOR, FUNCTION,
+    WHILE, DO, IF, ELSE, TRY, CATCH, BREAK, CONTINUE, FOR, FN,
 
     NAK // not a keyword
 };

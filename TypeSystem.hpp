@@ -1,5 +1,9 @@
 #pragma once
 
+#include <vector>
+#include <memory>
+#include <variant>
+
 #include "Lib.hpp"
 
 namespace SauScript {
@@ -119,10 +123,10 @@ struct Object {
         throw RuntimeError("expected number but got " + type_name() + at(line));
     }
 
-    [[nodiscard]] Object promote(int line) const {
-        if (type() == Type::INT)
-            return Object{(real_t)std::get<int_t>(object)};
-        throw RuntimeError("invalid promotion" + at(line));
+    [[nodiscard]] Object cast(Type type, int line) const {
+        if (type == Type::ANY || this->type() == type) return *this;
+        if (this->type() == Type::INT && type == Type::REAL) return {(real_t)std::get<int_t>(object)};
+        throw RuntimeError("attempt to implicitly cast from " + type_name() + " to " + std::string(nameOf(type)) + at(line));
     }
 
     void invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const;

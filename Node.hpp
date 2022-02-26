@@ -1,8 +1,7 @@
 #pragma once
 
-#include <utility>
-
 #include "Engine.hpp"
+#include "Operator.hpp"
 
 namespace SauScript {
 
@@ -303,9 +302,7 @@ struct JumpNode : ExprNode {
             : ExprNode(jumpTarget == JumpTarget::BREAK ? "break" : "continue", engine, line), jumpTarget(jumpTarget) {}
 
     void push() const override {
-        engine->target = {};
-        engine->jumpTarget = jumpTarget;
-        engine->jumpFrom = line;
+        engine->jump(jumpTarget, line, {});
     }
 };
 

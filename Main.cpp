@@ -1,6 +1,7 @@
 #include "SauScript.hpp"
 
 #include <iostream>
+#include <cstring>
 
 using namespace std;
 using SauScript::ScriptEngine;

@@ -1,6 +1,4 @@
 #include "Node.hpp"
-#include "TypeSystem.hpp"
-
 
 namespace SauScript {
 
@@ -32,28 +30,13 @@ void Function::invoke(ScriptEngine *engine, int line, const std::vector<Object> 
     for (int i = 0; i < arguments.size(); ++i) {
         auto&& parameter = parameters[i];
         auto&& argument = arguments[i];
-        if (argument.type() == Type::INT && parameter.type == Type::REAL) {
-            engine->local()[parameter.name] = argument.promote(line);
-        } else if (parameter.type == Type::ANY || parameter.type == argument.type()) {
-            engine->local()[parameter.name] = argument;
-        } else {
-            throw RuntimeError("mismatched type of the " + std::to_string(i + 1) + "th argument, expected "
-                + parameter.type_name() + " but got " + argument.type_name() + at(line));
-        }
+        engine->local()[parameter.name] = argument.cast(parameter.type, line);
     }
     stmt->push();
     switch (engine->jumpTarget) {
         case JumpTarget::RETURN: {
             engine->jumpTarget = JumpTarget::NONE;
-            int line = engine->jumpFrom;
-            Object returned = engine->target;
-            if (returned.type() == Type::INT && returnType == Type::REAL) {
-                engine->push(returned.promote(line));
-            } else if (returned.type() == Type::ANY || returned.type() == returnType) {
-                engine->push(returned);
-            } else {
-                throw RuntimeError("mismatched return type" + at(line));
-            }
+            engine->push(engine->target.cast(returnType, engine->jumpFrom));
         }
         case JumpTarget::NONE:
         default:

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include "Lib.hpp"
 
 namespace SauScript::Operators {
@@ -20,9 +22,9 @@ namespace SauScript::Operators {
 // 13 primary expression
 
 constexpr int LEVEL_ROOT = 0;
-constexpr int LEVEL_PREFIX = 11;
-constexpr int LEVEL_POSTFIX = 12;
-constexpr int LEVEL_PRIMARY = 13;
+constexpr int LEVEL_PREFIX = 12;
+constexpr int LEVEL_POSTFIX = 13;
+constexpr int LEVEL_PRIMARY = 14;
 
 struct Operator {
     using Unary = std::function<void(ExprNode*)>;
@@ -37,7 +39,7 @@ struct Operator {
     [[nodiscard]] bool isBinary() const { return fn.index(); }
 };
 
-extern const std::vector<Operator> OPERATORS[13];
+extern const std::vector<Operator> OPERATORS[14];
 
 inline Operator const* find(std::string const& literal, int level) {
     auto first = OPERATORS[level].begin(), last = OPERATORS[level].end();

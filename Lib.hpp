@@ -1,19 +1,7 @@
 #pragma once
 
-#include <utility>
-#include <vector>
-#include <stack>
 #include <string>
-#include <functional>
-#include <variant>
-#include <map>
 #include <stdexcept>
-#include <memory>
-#include <optional>
-#include <cstdio>
-#include <cstring>
-#include <string_view>
-#include <cstdint>
 
 namespace SauScript {
 

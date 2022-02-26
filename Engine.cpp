@@ -154,7 +154,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                 case TokenType::KEYWORD: {
                     using namespace Keyword;
                     switch (token.keyword()) {
-                        case FUNCTION:
+                        case FN:
                             return compileFunction(current);
                         case FOR:
                             return compileFor(current);
@@ -253,7 +253,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                         throw SyntaxError("missing ']' to match '['" + current->at());
                     ++current;
                     expr = std::make_unique<OpIndexNode>(this, line, std::move(expr), std::move(index));
-                } break;
+                } else break;
             }
             return expr;
         }
@@ -379,31 +379,36 @@ std::unique_ptr<ExprNode> ScriptEngine::compileTryCatch(Token*& current) {
 std::unique_ptr<ExprNode> ScriptEngine::compileFunction(Token*& current) {
     int line = (--current)->line;
     if (*++current != Token::parenLeft())
-        throw SyntaxError("left parenthesis of function expected" + (--current)->at());
+        throw SyntaxError("left parenthesis of function expected" + at(line));
     std::vector<Parameter> parameters;
     ++current;
     while (true) {
         if (*current == Token::parenRight()) break;
         if (current->type != TokenType::IDENTIFIER)
             throw SyntaxError("name of parameter expected" + current->at());
-        std::string p_name = current++->identifier();
-        if (*current++ != Token::punctuator(":"))
-            throw SyntaxError("expected ':' after parameter name" + (--current)->at());
-        Type p_type = current++->parseType();
-        parameters.push_back({p_type, p_name});
+        std::string name = current++->identifier();
+        Type type = Type::ANY;
+        if (*current == Token::punctuator(":")) {
+            type = (++current)->parseType();
+            ++current;
+        }
+        parameters.push_back({type, name});
         if (*current == Token::parenRight()) break;
         if (*current++ != Token::punctuator(","))
             throw SyntaxError("unexpected token interrupt function definition" + (--current)->at());
     }
-    if (*++current != Token::punctuator(":"))
-        throw SyntaxError("expected ': return-type' after parameter list" + current->at());
-    Type return_type = (++current)->parseType();
+    ++current;
+    Type returnType = Type::ANY;
+    if (*current == Token::punctuator(":")) {
+        returnType = (++current)->parseType();
+        ++current;
+    }
     std::unique_ptr<ExprNode> stmt;
-    if (*++current != Token::punctuator("="))
+    if (*current != Token::punctuator("="))
         throw SyntaxError("expected '=' after return type" + current->at());
     stmt = compileExpression(++current);
     return std::make_unique<ValNode>(this, line, Object{
-        std::make_shared<Function>(Function{return_type, parameters, std::move(stmt)})});
+        std::make_shared<Function>(Function{returnType, parameters, std::move(stmt)})});
 }
 
 std::unique_ptr<StmtsNode> ScriptEngine::compileStatements(Token*& current) {

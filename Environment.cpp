@@ -4,7 +4,6 @@
 #include <numeric>
 #include <numbers>
 #include <chrono>
-#include <cstdlib>
 
 namespace SauScript {
 
@@ -14,10 +13,16 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("int",      [](real_t x) { return int_t(x); });
     engine->installExternalFunction("real",     [](int_t x) { return real_t(x); });
 
-    engine->installExternalFunction("readInt",  [in = engine->in]() {
+    engine->installExternalFunction("print",    [out = engine->out](Object obj) {
+        std::fprintf(out, "%s ", obj.toString().c_str());
+    });
+    engine->installExternalFunction("println",  [out = engine->out](Object obj) {
+        std::fprintf(out, "%s\n", obj.toString().c_str());
+    });
+    engine->installExternalFunction("readInt",  [in = engine->in] {
         int_t x; if (!std::fscanf(in, "%lld", &x)) throw RuntimeError("invalid int input"); return x;
     });
-    engine->installExternalFunction("readReal", [in = engine->in]() {
+    engine->installExternalFunction("readReal", [in = engine->in] {
         real_t x; if (!std::fscanf(in, "%lf", &x)) throw RuntimeError("invalid real input"); return x;
     });
 
@@ -49,6 +54,23 @@ void installEnvironment(ScriptEngine* engine) {
             comparator->invoke(engine, 0, {a, b});
             return engine->pop().val().asBool(0);
         });
+    });
+    engine->installExternalFunction("map",      [engine](list_t list, func_t mapper) {
+        std::vector<Object> result;
+        for (auto&& obj : list->objs) {
+            mapper->invoke(engine, 0, {obj});
+            result.push_back(engine->pop().val());
+        }
+        return std::make_shared<List>(result);
+    });
+    engine->installExternalFunction("filter",   [engine](list_t list, func_t filter) {
+        std::vector<Object> result;
+        for (auto&& obj : list->objs) {
+            filter->invoke(engine, 0, {obj});
+            if (engine->pop().val().asBool(0))
+                result.push_back(obj);
+        }
+        return std::make_shared<List>(result);
     });
 
     engine->installExternalFunction("ceil",     ::ceil);

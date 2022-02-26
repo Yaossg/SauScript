@@ -1,8 +1,12 @@
 #pragma once
 
+#include <functional>
+#include <map>
+#include <deque>
+#include <stack>
+#include <utility>
+
 #include "TypeSystem.hpp"
-#include "Keywords.hpp"
-#include "Operators.hpp"
 
 namespace SauScript {
 
@@ -23,21 +27,16 @@ struct ScriptEngine {
     int jumpFrom = 0;
     Object target;
 
+    void jump(JumpTarget jumpTarget, int jumpFrom, Object target) {
+        this->jumpTarget = jumpTarget;
+        this->jumpFrom = jumpFrom;
+        this->target = std::move(target);
+    }
+
     std::stack<Operand> stack;
-
-    void push(Operand const &operand) {
-        stack.push(operand);
-    }
-
-    Operand &top() {
-        return stack.top();
-    }
-
-    Operand pop() {
-        auto operand = top();
-        stack.pop();
-        return operand;
-    }
+    void push(Operand const &operand) { stack.push(operand); }
+    [[nodiscard]] Operand& top() { return stack.top(); }
+    Operand pop() { auto operand = top(); stack.pop(); return operand; }
 
     ScriptEngine(FILE *out = stdout, FILE *in = stdin) : out(out), in(in) {
         installEnvironment(this);
