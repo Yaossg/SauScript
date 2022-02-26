@@ -133,3 +133,17 @@ any 类型，用于函数参数和返回值
 加入 print 和 println 函数
 
 加入 map 和 filter 函数
+
+### v1.3.2
+
+删除 yield 和 do-while
+
+break 和 continue 变为运算符
+
+循环现在默认返回一个列表
+
+for 循环的初始化和迭代子句可以用逗号间隔为多个分句
+
+加入 for-each 循环
+
+加入无参 print 和 println

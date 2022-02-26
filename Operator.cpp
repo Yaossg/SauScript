@@ -109,8 +109,11 @@ const std::vector<Operator> OPERATORS[14] = {
                 {"throw", unary([] (ScriptEngine* engine, int line) {
                     engine->jump(JumpTarget::THROW, line, engine->pop().val());
                 })},
-                {"yield", unary([] (ScriptEngine* engine, int line) {
+                {"break", unary([] (ScriptEngine* engine, int line) {
                     engine->jump(JumpTarget::BREAK, line, engine->pop().val());
+                })},
+                {"continue", unary([] (ScriptEngine* engine, int line) {
+                    engine->jump(JumpTarget::CONTINUE, line, engine->pop().val());
                 })},
                 {"return", unary([] (ScriptEngine* engine, int line) {
                     engine->jump(JumpTarget::RETURN, line, engine->pop().val());

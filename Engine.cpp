@@ -37,8 +37,8 @@ bool isNumberStart(char ch) {
         if (ch == '\\') {
             if (skipLineBreak(++current, true, line)) continue;
             throw SyntaxError("stray '\\'" + at(line));
-        } else if (skipLineBreak(current, false, line)) {
-            tokens.push_back(Token::linebreak().at(line - 1));
+        } else if (int old_line = line; skipLineBreak(current, false, line)) {
+            tokens.push_back(Token::linebreak().at(old_line));
         } else if (std::isspace(ch)) {
             ++current;
         } else {
@@ -160,16 +160,10 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                             return compileFor(current);
                         case WHILE:
                             return compileWhile(current);
-                        case DO:
-                            return compileDoWhile(current);
                         case IF:
                             return compileIfElse(current);
                         case TRY:
                             return compileTryCatch(current);
-                        case BREAK:
-                            return std::make_unique<JumpNode>(this, token.line, JumpTarget::BREAK);
-                        case CONTINUE:
-                            return std::make_unique<JumpNode>(this, token.line, JumpTarget::CONTINUE);
                         case CATCH:
                             throw SyntaxError("stray catch" + at(token.line));
                         case ELSE:
@@ -309,32 +303,41 @@ std::unique_ptr<ExprNode> ScriptEngine::compileWhile(Token*& current) {
     return std::make_unique<WhileNode>(this, line, std::move(cond), std::move(stmt));
 }
 
-std::unique_ptr<ExprNode> ScriptEngine::compileDoWhile(Token*& current) {
-    using namespace Keyword;
-    int line = (--current)->line;
-    if (*++current != Token::braceLeft()) throw SyntaxError("missing '{' in do-while" + current->at());
-    auto stmt = compileStatements(++current);
-    if (*current != Token::braceRight()) throw SyntaxError("missing '}' in do-while" + current->at());
-    if (*++current != Token::keyword(WHILE)) throw SyntaxError("missing 'while' in do-while" + current->at());
-    auto cond = compileExpression(++current);
-    if (*current != Token::linebreak()) throw SyntaxError("missing linebreak in do-while" + current->at());
-    ++current;
-    return std::make_unique<DoWhileNode>(this, line, std::move(stmt), std::move(cond));
-}
-
 std::unique_ptr<ExprNode> ScriptEngine::compileFor(Token*& current) {
     using namespace Keyword;
     int line = (--current)->line;
-    auto init = compileExpression(++current);
+    std::vector<std::unique_ptr<ExprNode>> init;
+    init.push_back(compileExpression(++current));
+    if (*current == Token::punctuator(":")) {
+        if (auto* ref = dynamic_cast<RefNode*>(init.front().get())) {
+            auto iter = compileExpression(++current);
+            if (*current != Token::braceLeft()) throw SyntaxError("missing '{' in for" + current->at());
+            auto stmt = compileStatements(++current);
+            if (*current != Token::braceRight()) throw SyntaxError("missing '}' in for" + current->at());
+            ++current;
+            return std::make_unique<ForEachNode>(this, line, ref->name, std::move(iter), std::move(stmt));
+        } else {
+            throw SyntaxError("expected id-expression in for-each");
+        }
+    }
+    while (*current == Token::punctuator(","))
+        init.push_back(compileExpression(++current));
     if (*current != Token::linebreak()) throw SyntaxError("missing first linebreak in for" + current->at());
     auto cond = compileExpression(++current);
     if (*current != Token::linebreak()) throw SyntaxError("missing second linebreak in for" + current->at());
-    auto iter = compileExpression(++current);
+    std::vector<std::unique_ptr<ExprNode>> iter;
+    iter.push_back(compileExpression(++current));
+    while (*current == Token::punctuator(","))
+        iter.push_back(compileExpression(++current));
     if (*current != Token::braceLeft()) throw SyntaxError("missing '{' in for" + current->at());
     auto stmt = compileStatements(++current);
     if (*current != Token::braceRight()) throw SyntaxError("missing '}' in for" + current->at());
     ++current;
-    return std::make_unique<ForNode>(this, line, std::move(init), std::move(cond), std::move(iter), std::move(stmt));
+    return std::make_unique<ForNode>(this, line,
+                                     std::make_unique<StmtsNode>(this, line, std::move(init)),
+                                     std::move(cond),
+                                     std::make_unique<StmtsNode>(this, line, std::move(iter)),
+                                     std::move(stmt));
 }
 
 std::unique_ptr<ExprNode> ScriptEngine::compileIfElse(Token*& current) {
@@ -433,7 +436,7 @@ std::unique_ptr<StmtsNode> ScriptEngine::compile(const char* script) {
 
 void ScriptEngine::exec(const char* script, FILE* err) {
     try {
-        compile(script)->push_repl();
+        compile(script)->push_unscoped();
         Operand ret;
         switch (jumpTarget) {
             case JumpTarget::THROW:

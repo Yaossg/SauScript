@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include "Engine.hpp"
 #include "Operator.hpp"
 
@@ -264,10 +266,10 @@ struct StmtsNode : ExprNode {
 
     void push() const override {
         ScriptScope scope(engine);
-        push_repl();
+        push_unscoped();
     }
 
-    void push_repl() const {
+    void push_unscoped() const {
         Operand ret;
         for (auto&& stmt : stmts) {
             stmt->push();
@@ -296,45 +298,38 @@ struct StmtsNode : ExprNode {
     }
 };
 
-struct JumpNode : ExprNode {
-    JumpTarget jumpTarget;
-    JumpNode(ScriptEngine* engine, int line, JumpTarget jumpTarget)
-            : ExprNode(jumpTarget == JumpTarget::BREAK ? "break" : "continue", engine, line), jumpTarget(jumpTarget) {}
-
-    void push() const override {
-        engine->jump(jumpTarget, line, {});
-    }
-};
-
 struct WhileNode : ExprNode {
     std::unique_ptr<ExprNode> cond;
     std::unique_ptr<ExprNode> loop;
     WhileNode(ScriptEngine* engine, int line,
               std::unique_ptr<ExprNode> cond,
-              std::unique_ptr<ExprNode> loop)
-            : ExprNode("while", engine, line), cond(std::move(cond)), loop(std::move(loop)) {}
+              std::unique_ptr<ExprNode> loop): ExprNode("while", engine, line),
+              cond(std::move(cond)), loop(std::move(loop)) {}
 
     void push() const override {
         ScriptScope scope(engine);
+        std::vector<Object> yield;
         begin:
         cond->push();
         if (engine->jumpTarget == JumpTarget::NONE) {
             if (!engine->pop().val().asBool(line)) goto end;
             loop->push();
             if (engine->jumpTarget == JumpTarget::NONE)
-                engine->pop();
+                yield.push_back(engine->pop().val());
         }
-        if (engine->jumpTarget == JumpTarget::CONTINUE) engine->jumpTarget = JumpTarget::NONE;
+        if (engine->jumpTarget == JumpTarget::CONTINUE) {
+            engine->jumpTarget = JumpTarget::NONE;
+            yield.push_back(engine->target);
+        }
         if (engine->jumpTarget != JumpTarget::NONE) goto end;
         goto begin;
         end:
-        Operand ret;
         if (engine->jumpTarget == JumpTarget::BREAK) {
             engine->jumpTarget = JumpTarget::NONE;
-            ret = engine->target;
+            engine->push(engine->target);
+        } else if (engine->jumpTarget == JumpTarget::NONE) {
+            engine->push(Object{std::make_shared<List>(std::move(yield))});
         }
-        if (engine->jumpTarget == JumpTarget::NONE)
-            engine->push(ret);
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -346,60 +341,22 @@ struct WhileNode : ExprNode {
     }
 };
 
-struct DoWhileNode : ExprNode {
-    std::unique_ptr<ExprNode> loop;
-    std::unique_ptr<ExprNode> cond;
-    DoWhileNode(ScriptEngine* engine, int line,
-                std::unique_ptr<ExprNode> loop,
-                std::unique_ptr<ExprNode> cond)
-            : ExprNode("do-while", engine, line), loop(std::move(loop)), cond(std::move(cond)) {}
-
-    void push() const override {
-        ScriptScope scope(engine);
-        begin:
-        loop->push();
-        if (engine->jumpTarget == JumpTarget::NONE)
-            engine->pop();
-        if (engine->jumpTarget == JumpTarget::CONTINUE) engine->jumpTarget = JumpTarget::NONE;
-        if (engine->jumpTarget != JumpTarget::NONE) goto end;
-        cond->push();
-        if (engine->jumpTarget == JumpTarget::CONTINUE) engine->jumpTarget = JumpTarget::NONE;
-        if (engine->jumpTarget != JumpTarget::NONE) goto end;
-        if (engine->pop().val().asBool(line)) goto begin;
-        end:
-        Operand ret;
-        if (engine->jumpTarget == JumpTarget::BREAK) {
-            engine->jumpTarget = JumpTarget::NONE;
-            ret = engine->target;
-        }
-        if (engine->jumpTarget == JumpTarget::NONE)
-            engine->push(ret);
-    }
-
-    [[nodiscard]] std::vector<ExprNode*> children() const override {
-        return {loop.get(), cond.get()};
-    }
-
-    [[nodiscard]] std::string toString() const override {
-        return "do" + loop->toString() + "while " + cond->toString() + ";";
-    }
-};
-
 struct ForNode : ExprNode {
-    std::unique_ptr<ExprNode> init;
+    std::unique_ptr<StmtsNode> init;
     std::unique_ptr<ExprNode> cond;
-    std::unique_ptr<ExprNode> iter;
+    std::unique_ptr<StmtsNode> iter;
     std::unique_ptr<ExprNode> loop;
     ForNode(ScriptEngine* engine, int line,
-            std::unique_ptr<ExprNode> init,
+            std::unique_ptr<StmtsNode> init,
             std::unique_ptr<ExprNode> cond,
-            std::unique_ptr<ExprNode> iter,
-            std::unique_ptr<ExprNode> loop)
-            : ExprNode("for", engine, line), init(std::move(init)), cond(std::move(cond)), iter(std::move(iter)), loop(std::move(loop)) {}
+            std::unique_ptr<StmtsNode> iter,
+            std::unique_ptr<ExprNode> loop): ExprNode("for", engine, line),
+            init(std::move(init)), cond(std::move(cond)), iter(std::move(iter)), loop(std::move(loop)) {}
 
     void push() const override {
         ScriptScope scope(engine);
-        init->push();
+        std::vector<Object> yield;
+        init->push_unscoped();
         if (engine->jumpTarget != JumpTarget::NONE) goto end;
         engine->pop();
         begin:
@@ -408,21 +365,23 @@ struct ForNode : ExprNode {
             if (!engine->pop().val().asBool(line)) goto end;
             loop->push();
             if (engine->jumpTarget == JumpTarget::NONE)
-                engine->pop();
+                yield.push_back(engine->pop().val());
         }
-        if (engine->jumpTarget == JumpTarget::CONTINUE) engine->jumpTarget = JumpTarget::NONE;
+        if (engine->jumpTarget == JumpTarget::CONTINUE) {
+            engine->jumpTarget = JumpTarget::NONE;
+            yield.push_back(engine->target);
+        }
         if (engine->jumpTarget != JumpTarget::NONE) goto end;
-        iter->push();
+        iter->push_unscoped();
         engine->pop();
         goto begin;
         end:
-        Operand ret;
         if (engine->jumpTarget == JumpTarget::BREAK) {
             engine->jumpTarget = JumpTarget::NONE;
-            ret = engine->target;
+            engine->push(engine->target);
+        } else if (engine->jumpTarget == JumpTarget::NONE) {
+            engine->push(Object{std::make_shared<List>(std::move(yield))});
         }
-        if (engine->jumpTarget == JumpTarget::NONE)
-            engine->push(ret);
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -434,6 +393,50 @@ struct ForNode : ExprNode {
     }
 };
 
+struct ForEachNode : ExprNode {
+    std::string name;
+    std::unique_ptr<ExprNode> iter;
+    std::unique_ptr<ExprNode> loop;
+    ForEachNode(ScriptEngine* engine, int line,
+                std::string name,
+                std::unique_ptr<ExprNode> iter,
+                std::unique_ptr<ExprNode> loop): ExprNode("for-each " + name, engine, line),
+                name(std::move(name)), iter(std::move(iter)), loop(std::move(loop)) {}
+
+    void push() const override {
+        ScriptScope scope(engine);
+        std::vector<Object> yield;
+        iter->push();
+        if (engine->jumpTarget == JumpTarget::NONE) {
+            for (auto list = engine->pop().val().iterable(line); auto&& obj : list->objs) {
+                engine->local()[name] = obj;
+                loop->push();
+                if (engine->jumpTarget == JumpTarget::NONE)
+                    yield.push_back(engine->pop().val());
+                if (engine->jumpTarget == JumpTarget::CONTINUE) {
+                    engine->jumpTarget = JumpTarget::NONE;
+                    yield.push_back(engine->target);
+                }
+                if (engine->jumpTarget != JumpTarget::NONE) break;
+            }
+        }
+        if (engine->jumpTarget == JumpTarget::BREAK) {
+            engine->jumpTarget = JumpTarget::NONE;
+            engine->push(engine->target);
+        } else if (engine->jumpTarget == JumpTarget::NONE) {
+            engine->push(Object{std::make_shared<List>(std::move(yield))});
+        }
+    }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        return {iter.get(), loop.get()};
+    }
+
+    [[nodiscard]] std::string toString() const override {
+        return "for " + name + ":" + iter->toString() + loop->toString();
+    }
+};
+
 struct IfElseNode : ExprNode {
     std::unique_ptr<ExprNode> cond;
     std::unique_ptr<ExprNode> then;
@@ -441,8 +444,8 @@ struct IfElseNode : ExprNode {
     IfElseNode(ScriptEngine* engine, int line,
                std::unique_ptr<ExprNode> cond,
                std::unique_ptr<ExprNode> then,
-               std::unique_ptr<ExprNode> else_)
-            : ExprNode("if-else", engine, line), cond(std::move(cond)), then(std::move(then)), else_(std::move(else_)) {}
+               std::unique_ptr<ExprNode> else_): ExprNode("if-else", engine, line),
+               cond(std::move(cond)), then(std::move(then)), else_(std::move(else_)) {}
 
     void push() const override {
         ScriptScope scope(engine);
@@ -467,8 +470,8 @@ struct TryCatchNode : ExprNode {
     TryCatchNode(ScriptEngine* engine, int line,
                  std::unique_ptr<ExprNode> try_,
                  std::string name,
-                 std::unique_ptr<ExprNode> catch_)
-            : ExprNode("try-catch", engine, line), try_(std::move(try_)), name(std::move(name)), catch_(std::move(catch_)) {}
+                 std::unique_ptr<ExprNode> catch_): ExprNode("try-catch", engine, line),
+                 try_(std::move(try_)), name(std::move(name)), catch_(std::move(catch_)) {}
 
     void push() const override {
         {

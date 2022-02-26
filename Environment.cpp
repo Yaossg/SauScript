@@ -13,8 +13,14 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("int",      [](real_t x) { return int_t(x); });
     engine->installExternalFunction("real",     [](int_t x) { return real_t(x); });
 
+    engine->installExternalFunction("print",    [out = engine->out]() {
+        std::fprintf(out, " ");
+    });
     engine->installExternalFunction("print",    [out = engine->out](Object obj) {
         std::fprintf(out, "%s ", obj.toString().c_str());
+    });
+    engine->installExternalFunction("println",  [out = engine->out] {
+        std::fprintf(out, "\n");
     });
     engine->installExternalFunction("println",  [out = engine->out](Object obj) {
         std::fprintf(out, "%s\n", obj.toString().c_str());

@@ -131,6 +131,11 @@ struct Object {
 
     void invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const;
 
+    [[nodiscard]] list_t iterable(int line) const {
+        if (type() != Type::LIST) throw RuntimeError("not iterable" + at(line));
+        return std::get<list_t>(object);
+    }
+
     [[nodiscard]] std::string toString() const;
 
     template<typename T>

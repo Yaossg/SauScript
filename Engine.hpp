@@ -53,7 +53,6 @@ struct ScriptEngine {
 
     [[nodiscard]] std::unique_ptr<ExprNode> compileExpression(Token *&current, int level);
     [[nodiscard]] std::unique_ptr<ExprNode> compileWhile(Token *&current);
-    [[nodiscard]] std::unique_ptr<ExprNode> compileDoWhile(Token *&current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileFor(Token *&current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileIfElse(Token *&current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileTryCatch(Token *&current);
