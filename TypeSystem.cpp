@@ -3,7 +3,7 @@
 namespace SauScript {
 
 std::string Function::descriptor() const {
-    std::string ret = "function(";
+    std::string ret = "fn(";
     bool first = true;
     for (auto&& parameter : parameters) {
         if (first) { first = false; } else { ret += ", "; }

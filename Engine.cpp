@@ -67,6 +67,10 @@ bool isNumberStart(char ch) {
                     tokens.push_back(Token::braceRight().at(line));
                     ++current;
                     continue;
+                case '\'':
+                    tokens.push_back(Token::literal_int(Unicode::unquoteCharacter(current, line)).at(line));
+                    ++current;
+                    continue;
             }
             if (isIdentifierStart(ch)) {
                 char const *first = current;
@@ -78,6 +82,8 @@ bool isNumberStart(char ch) {
                     tokens.push_back(Token::literal_bool(true).at(line));
                 } else if (token == "__LINE__") {
                     tokens.push_back(Token::literal_int(line).at(line));
+                } else if (token == "EOF") {
+                    tokens.push_back(Token::literal_int(EOF).at(line));
                 } else if (token == "nan") {
                     tokens.push_back(Token::literal_real(0.0 / 0.0).at(line));
                 } else if (token == "inf") {

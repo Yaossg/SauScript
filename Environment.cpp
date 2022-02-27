@@ -1,4 +1,5 @@
 #include "Node.hpp"
+#include "Unicode.hpp"
 
 #include <cmath>
 #include <numeric>
@@ -13,6 +14,9 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("int",      [](real_t x) { return int_t(x); });
     engine->installExternalFunction("real",     [](int_t x) { return real_t(x); });
 
+    engine->installExternalFunction("putchar",  [out = engine->out](int_t ch) {
+        std::fprintf(out, "%s", Unicode::encodeUnicode(ch, 0).c_str());
+    });
     engine->installExternalFunction("print",    [out = engine->out]() {
         std::fprintf(out, " ");
     });
@@ -24,6 +28,10 @@ void installEnvironment(ScriptEngine* engine) {
     });
     engine->installExternalFunction("println",  [out = engine->out](Object obj) {
         std::fprintf(out, "%s\n", obj.toString().c_str());
+    });
+
+    engine->installExternalFunction("getchar",  [in = engine->in] {
+        return Unicode::decodeUnicode([in] { return fgetc(in); });
     });
     engine->installExternalFunction("readInt",  [in = engine->in] {
         int_t x;
@@ -58,9 +66,20 @@ void installEnvironment(ScriptEngine* engine) {
         if (index < 0 || index > list->objs.size()) throw RuntimeError("[List::insert]: index out of bound");
         list->objs.insert(list->objs.begin() + index, obj);
     });
-    engine->installExternalFunction("erase",    [](list_t list, int_t index) {
+    engine->installExternalFunction("removeAt", [](list_t list, int_t index) {
         if (index < 0 || index >= list->objs.size()) throw RuntimeError("[List::erase]: index out of bound");
         list->objs.erase(list->objs.begin() + index);
+    });
+    engine->installExternalFunction("remove",   [](list_t list, Object obj) {
+        erase(list->objs, obj);
+    });
+    engine->installExternalFunction("indexOf",  [](list_t list, Object obj) {
+        int_t index = std::find(list->objs.begin(), list->objs.end(), obj) - list->objs.begin();
+        return list->objs.size() == index ? -1 : index;
+    });
+    engine->installExternalFunction("lastIndexOf",[](list_t list, Object obj) {
+        int_t index = list->objs.size() - (std::find(list->objs.rbegin(), list->objs.rend(), obj) - list->objs.rbegin()) - 1;
+        return list->objs.size() == index ? -1 : index;
     });
     engine->installExternalFunction("reverse",  [](list_t list) { std::reverse(list->objs.begin(), list->objs.end()); });
     engine->installExternalFunction("sort",     [engine](list_t list, func_t comparator) {

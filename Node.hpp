@@ -56,6 +56,10 @@ struct ValNode : ExprNode {
         }
         return {};
     }
+
+    [[nodiscard]] std::string toString() const override {
+        return val.toString();
+    }
 };
 
 struct RefNode : ExprNode {
@@ -116,7 +120,7 @@ struct OpBinaryNode : ExprNode {
     }
 
     [[nodiscard]] std::string toString() const override {
-        return "(" + lhs->toString() + std::string(op->literal) + rhs->toString() + ")";
+        return "(" + lhs->toString() + " " + std::string(op->literal) + " " + rhs->toString() + ")";
     }
 };
 
@@ -139,7 +143,7 @@ struct OpTernaryNode : ExprNode {
     }
 
     [[nodiscard]] std::string toString() const override {
-        return "(" + cond->toString() + "?" + lhs->toString() + ":" + rhs->toString() + ")";
+        return "(" + cond->toString() + " ? " + lhs->toString() + " : " + rhs->toString() + ")";
     }
 };
 
@@ -204,8 +208,9 @@ struct OpInvokeNode : ExprNode {
     }
 
     [[nodiscard]] std::string toString() const override {
-        std::string ret = func->toString();
-        ret += "(";
+        std::string ret = "(";
+        ret += func->toString();
+        ret += ")(";
         bool first = true;
         for (auto&& arg : args) {
             if (first) { first = false; } else { ret += ", "; }
@@ -300,9 +305,10 @@ struct StmtsNode : ExprNode {
 
     [[nodiscard]] std::string toStringUnscoped() const {
         std::string ret;
+        bool first = true;
         for (auto&& stmt : stmts) {
+            if (first) { first = false; } else { ret += ","; }
             ret += stmt->toString();
-            ret += ",";
         }
         return ret;
     }

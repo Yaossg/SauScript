@@ -150,6 +150,41 @@ struct Object {
             return std::get<(size_t) parseType<T>()>(object);
         }
     }
+
+    bool operator==(Object const& other) const {
+        return std::visit(overloaded {
+            [] (auto a, auto b) { return false; },
+            [] (std::monostate, std::monostate) { return true; },
+            [] (int_t a, int_t b) { return a == b; },
+            [] (real_t a, real_t b) { return a == b; },
+            [] (int_t a, real_t b) { return a == b; },
+            [] (real_t a, int_t b) { return a == b; },
+            [] (func_t const& a, func_t const& b) { return a.get() == b.get(); },
+            [] (list_t const& a, list_t const& b) { return std::equal(a->objs.begin(), a->objs.end(), b->objs.begin(), b->objs.end()); },
+        }, object, other.object);
+    }
+
+    bool operator<(Object const& other) const {
+        return std::visit(overloaded {
+            [] (auto a, auto b) -> bool { throw RuntimeError("incomparable"); },
+            [] (std::monostate, std::monostate) { return false; },
+            [] (int_t a, int_t b) { return a < b; },
+            [] (real_t a, real_t b) { return a < b; },
+            [] (int_t a, real_t b) { return a < b; },
+            [] (real_t a, int_t b) { return a < b; },
+            [] (list_t const& a, list_t const& b) { return std::lexicographical_compare(a->objs.begin(), a->objs.end(), b->objs.begin(), b->objs.end()); },
+        }, object, other.object);
+    }
+
+    bool operator>(Object const& other) const {
+        return other.operator<(*this);
+    }
+    bool operator<=(Object const& other) const {
+        return !operator>(other);
+    }
+    bool operator>=(Object const& other) const {
+        return !operator<(other);
+    }
 };
 
 struct Operand {

@@ -29,6 +29,20 @@ auto unary(Fn fn) {
 }
 
 template<typename Fn>
+auto binary(Fn fn) {
+    return [fn](ExprNode* lhs, ExprNode* rhs) {
+        auto* engine = lhs->engine;
+        lhs->push();
+        if (engine->jumpTarget != JumpTarget::NONE) return;
+        auto a = engine->pop();
+        rhs->push();
+        if (engine->jumpTarget != JumpTarget::NONE) return;
+        auto b = engine->pop();
+        engine->push(Object{fn(a.val(), b.val())});
+    };
+}
+
+template<typename Fn>
 auto simpleBinary(Fn fn) {
     return [fn](ExprNode* lhs, ExprNode* rhs) {
         auto* engine = lhs->engine;
@@ -167,16 +181,16 @@ const std::vector<Operator> OPERATORS[14] = {
         {{"^", intBinary(std::bit_xor<int_t>{})}},
         {{"&", intBinary(std::bit_and<int_t>{})}},
         {
-                {"==", simpleBinary(std::equal_to<>{})},
-                {"!=", simpleBinary(std::not_equal_to<>{})}
+                {"==", binary(std::equal_to<>{})},
+                {"!=", binary(std::not_equal_to<>{})}
         },
         {
-                {"<",  simpleBinary(std::less<>{})},
-                {">",  simpleBinary(std::greater<>{})},
-                {"<=", simpleBinary(std::less_equal<>{})},
-                {">=", simpleBinary(std::greater_equal<>{})}
+                {"<",  binary(std::less<>{})},
+                {">",  binary(std::greater<>{})},
+                {"<=", binary(std::less_equal<>{})},
+                {">=", binary(std::greater_equal<>{})}
         },
-        {{"<=>", simpleBinary([](auto lhs, auto rhs) { return lhs == rhs ? 0 : lhs < rhs ? -1 : 1; })}},
+        {{"<=>", binary([](auto lhs, auto rhs) { return lhs == rhs ? 0 : lhs < rhs ? -1 : 1; })}},
         {
                 {"<<", intBinary([](int_t lhs, int_t rhs) { return lhs << rhs; }, shift_assert)},
                 {">>", intBinary([](int_t lhs, int_t rhs) { return lhs >> rhs; }, shift_assert)},

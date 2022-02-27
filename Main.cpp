@@ -7,19 +7,21 @@ using namespace std;
 using SauScript::ScriptEngine;
 
 void file() {
-    ScriptEngine engine;
-    FILE* fp = fopen("script.txt", "r");
-    if (fp == NULL) {
-        printf("Failed to open script.txt\n");
+    FILE* file_script = fopen("script.txt", "r");
+    FILE* file_output = fopen("output.txt", "w");
+    FILE* file_input = fopen("input.txt", "r");
+    if (!(file_script && file_input && file_output)) {
+        printf("Failed to open files\n");
         return;
     }
+    ScriptEngine engine(file_output, file_input);
     string script;
     do {
         char line[256];
         memset(line, 0, sizeof line);
-        fgets(line, sizeof line, fp);
+        fgets(line, sizeof line, file_script);
         script += line;
-    } while (!feof(fp));
+    } while (!feof(file_script));
 //    puts("source code: ");
 //    puts(script.c_str());
 //    auto compiled = engine.compile(script.c_str());
@@ -42,6 +44,6 @@ void file() {
 }
 
 int main() {
-    file();
-    //repl();
+    //file();
+    repl();
 }
