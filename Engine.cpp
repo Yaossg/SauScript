@@ -440,14 +440,14 @@ void ScriptEngine::exec(const char* script, FILE* err) {
         Operand ret;
         switch (jumpTarget) {
             case JumpTarget::THROW:
-                fprintf(err, "Unhandled exception: %s", target.toString().c_str());
+                fprintf(err, "Unhandled exception: %s", yield.toString().c_str());
                 break;
             case JumpTarget::BREAK:
                 throw RuntimeError("Wild break jump" + at(jumpFrom));
             case JumpTarget::CONTINUE:
                 throw RuntimeError("Wild continue jump" + at(jumpFrom));
             case JumpTarget::RETURN:
-                ret = target;
+                ret = yield;
                 break;
             case JumpTarget::NONE:
                 ret = pop();

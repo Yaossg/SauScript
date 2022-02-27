@@ -136,6 +136,10 @@ struct Object {
         return std::get<list_t>(object);
     }
 
+    void yield(std::vector<Object>& yield) const {
+        if (type() != Type::VOID) yield.push_back(*this);
+    }
+
     [[nodiscard]] std::string toString() const;
 
     template<typename T>

@@ -11,7 +11,8 @@ struct ExprNode {
     std::string descriptor;
     ScriptEngine* engine;
     int line;
-    ExprNode(std::string descriptor, ScriptEngine* engine, int line): descriptor(std::move(descriptor)), engine(engine), line(line) {}
+    ExprNode(std::string descriptor, ScriptEngine* engine, int line)
+        : descriptor(std::move(descriptor)), engine(engine), line(line) {}
 
     virtual void push() const = 0;
     [[nodiscard]] virtual std::vector<ExprNode*> children() const { return {}; }
@@ -156,7 +157,7 @@ struct OpIndexNode : ExprNode {
         auto t = engine->pop();
         auto a = std::get<list_t>(t.val().object);
         index->push();
-        if (engine->jumpTarget != JumpTarget::NONE) { engine->pop(); return; }
+        if (engine->jumpTarget != JumpTarget::NONE) return;
         auto b = engine->pop().val().asInt(line);
         if (b < 0 || b >= a->objs.size()) throw RuntimeError("list index access out of bound" + at(line));
         if (t.val_or_ref.index())
@@ -296,6 +297,15 @@ struct StmtsNode : ExprNode {
         ret += "}";
         return ret;
     }
+
+    [[nodiscard]] std::string toStringUnscoped() const {
+        std::string ret;
+        for (auto&& stmt : stmts) {
+            ret += stmt->toString();
+            ret += ",";
+        }
+        return ret;
+    }
 };
 
 struct WhileNode : ExprNode {
@@ -315,18 +325,18 @@ struct WhileNode : ExprNode {
             if (!engine->pop().val().asBool(line)) goto end;
             loop->push();
             if (engine->jumpTarget == JumpTarget::NONE)
-                yield.push_back(engine->pop().val());
+                engine->pop().val().yield(yield);
         }
         if (engine->jumpTarget == JumpTarget::CONTINUE) {
             engine->jumpTarget = JumpTarget::NONE;
-            yield.push_back(engine->target);
+            engine->yield.yield(yield);
         }
         if (engine->jumpTarget != JumpTarget::NONE) goto end;
         goto begin;
         end:
         if (engine->jumpTarget == JumpTarget::BREAK) {
             engine->jumpTarget = JumpTarget::NONE;
-            engine->push(engine->target);
+            engine->push(engine->yield);
         } else if (engine->jumpTarget == JumpTarget::NONE) {
             engine->push(Object{std::make_shared<List>(std::move(yield))});
         }
@@ -365,11 +375,11 @@ struct ForNode : ExprNode {
             if (!engine->pop().val().asBool(line)) goto end;
             loop->push();
             if (engine->jumpTarget == JumpTarget::NONE)
-                yield.push_back(engine->pop().val());
+                engine->pop().val().yield(yield);
         }
         if (engine->jumpTarget == JumpTarget::CONTINUE) {
             engine->jumpTarget = JumpTarget::NONE;
-            yield.push_back(engine->target);
+            engine->yield.yield(yield);
         }
         if (engine->jumpTarget != JumpTarget::NONE) goto end;
         iter->push_unscoped();
@@ -378,7 +388,7 @@ struct ForNode : ExprNode {
         end:
         if (engine->jumpTarget == JumpTarget::BREAK) {
             engine->jumpTarget = JumpTarget::NONE;
-            engine->push(engine->target);
+            engine->push(engine->yield);
         } else if (engine->jumpTarget == JumpTarget::NONE) {
             engine->push(Object{std::make_shared<List>(std::move(yield))});
         }
@@ -389,7 +399,7 @@ struct ForNode : ExprNode {
     }
 
     [[nodiscard]] std::string toString() const override {
-        return "for " + init->toString() + ";" + cond->toString() + ";" + iter->toString() + loop->toString();
+        return "for " + init->toStringUnscoped() + ";" + cond->toString() + ";" + iter->toStringUnscoped() + loop->toString();
     }
 };
 
@@ -412,17 +422,17 @@ struct ForEachNode : ExprNode {
                 engine->local()[name] = obj;
                 loop->push();
                 if (engine->jumpTarget == JumpTarget::NONE)
-                    yield.push_back(engine->pop().val());
+                    engine->pop().val().yield(yield);
                 if (engine->jumpTarget == JumpTarget::CONTINUE) {
                     engine->jumpTarget = JumpTarget::NONE;
-                    yield.push_back(engine->target);
+                    engine->yield.yield(yield);
                 }
                 if (engine->jumpTarget != JumpTarget::NONE) break;
             }
         }
         if (engine->jumpTarget == JumpTarget::BREAK) {
             engine->jumpTarget = JumpTarget::NONE;
-            engine->push(engine->target);
+            engine->push(engine->yield);
         } else if (engine->jumpTarget == JumpTarget::NONE) {
             engine->push(Object{std::make_shared<List>(std::move(yield))});
         }
@@ -481,7 +491,7 @@ struct TryCatchNode : ExprNode {
         if (engine->jumpTarget == JumpTarget::THROW) {
             engine->jumpTarget = JumpTarget::NONE;
             ScriptScope scope(engine);
-            engine->local()[name] = engine->target;
+            engine->local()[name] = engine->yield;
             catch_->push();
         }
     }

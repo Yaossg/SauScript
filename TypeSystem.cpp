@@ -36,7 +36,7 @@ void Function::invoke(ScriptEngine *engine, int line, const std::vector<Object> 
     switch (engine->jumpTarget) {
         case JumpTarget::RETURN: {
             engine->jumpTarget = JumpTarget::NONE;
-            engine->push(engine->target.cast(returnType, engine->jumpFrom));
+            engine->push(engine->yield.cast(returnType, engine->jumpFrom));
         }
         case JumpTarget::NONE:
         default:
@@ -113,7 +113,7 @@ std::string List::toString() const {
     for (auto&& obj : objs) {
         if (first) { first = false; } else { ret += ", "; }
         if (obj.type() == Type::LIST && get<list_t>(obj.object)->mark)
-            throw RuntimeError("[List::toString]: fatal recursive list"); // no line information
+            throw RuntimeError("[List::toString]: fatal recursive list");
         ret += obj.toString();
     }
     return ret + "]";

@@ -26,10 +26,18 @@ void installEnvironment(ScriptEngine* engine) {
         std::fprintf(out, "%s\n", obj.toString().c_str());
     });
     engine->installExternalFunction("readInt",  [in = engine->in] {
-        int_t x; if (!std::fscanf(in, "%lld", &x)) throw RuntimeError("invalid int input"); return x;
+        int_t x;
+        if (!std::fscanf(in, "%lld", &x))
+            throw RuntimeError("invalid int input");
+        fgetc(in);
+        return x;
     });
     engine->installExternalFunction("readReal", [in = engine->in] {
-        real_t x; if (!std::fscanf(in, "%lf", &x)) throw RuntimeError("invalid real input"); return x;
+        real_t x;
+        if (!std::fscanf(in, "%lf", &x))
+            throw RuntimeError("invalid real input");
+        fgetc(in);
+        return x;
     });
 
     engine->installExternalFunction("copy",     [](list_t list) { return std::make_shared<List>(list->objs); });

@@ -25,12 +25,12 @@ struct ScriptEngine {
     FILE *out, *in;
     JumpTarget jumpTarget = JumpTarget::NONE;
     int jumpFrom = 0;
-    Object target;
+    Object yield;
 
-    void jump(JumpTarget jumpTarget, int jumpFrom, Object target) {
+    void jump(JumpTarget jumpTarget, int jumpFrom, Object yield) {
         this->jumpTarget = jumpTarget;
         this->jumpFrom = jumpFrom;
-        this->target = std::move(target);
+        this->yield = std::move(yield);
     }
 
     std::stack<Operand> stack;
