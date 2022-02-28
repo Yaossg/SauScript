@@ -29,7 +29,7 @@ void file() {
 //    puts(compiled->toString().c_str());
 //    puts("syntax tree: ");
 //    puts(compiled->walk().c_str());
-    engine.exec(script.c_str());
+    engine.exec(script);
 }
 
 [[noreturn]] void repl() {
@@ -39,11 +39,11 @@ void file() {
         string line;
         printf(">>>");
         getline(cin, line);
-        engine.exec(line.c_str());
+        engine.exec(line);
     }
 }
 
 int main() {
-    //file();
-    repl();
+    file();
+    //repl();
 }

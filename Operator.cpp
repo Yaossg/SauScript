@@ -2,16 +2,16 @@
 
 namespace SauScript::Operators {
 
-using Assertion = void(int_t, int);
+using Assertion = void(int_t);
 
-void noop_assert(int_t, int) {}
+void noop_assert(int_t) {}
 
-void division_assert(int_t b, int line) {
-    if (b == 0) throw RuntimeError("divided by zero" + at(line));
+void division_assert(int_t b) {
+    if (b == 0) throw PlainRuntimeError("divided by zero");
 }
 
-void shift_assert(int_t b, int line) {
-    if (b < 0) throw RuntimeError("negative shift count" + at(line));
+void shift_assert(int_t b) {
+    if (b < 0) throw PlainRuntimeError("negative shift count");
 }
 
 int_t ushr(int_t lhs, int_t rhs) {
@@ -24,7 +24,7 @@ auto unary(Fn fn) {
         auto* engine = node->engine;
         node->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        fn(engine, node->line);
+        fn(engine, node->location);
     };
 }
 
@@ -53,7 +53,7 @@ auto simpleBinary(Fn fn) {
         if (engine->jumpTarget != JumpTarget::NONE) return;
         auto b = engine->pop();
         engine->push(std::visit([fn](auto lhs, auto rhs) { return Object{fn(*lhs, *rhs)}; },
-                                a.val().asNumber(lhs->line), b.val().asNumber(rhs->line)));
+                                a.val().asNumber(), b.val().asNumber()));
     };
 }
 
@@ -63,11 +63,11 @@ auto intBinary(Fn fn, Assertion* an = noop_assert) {
         auto* engine = lhs->engine;
         lhs->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        auto a = lhs->engine->pop().val().asInt(lhs->line);
+        auto a = lhs->engine->pop().val().asInt();
         rhs->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        auto b = rhs->engine->pop().val().asInt(rhs->line);
-        an(b, rhs->line);
+        auto b = rhs->engine->pop().val().asInt();
+        an(b);
         engine->push(Object{fn(a, b)});
     };
 }
@@ -82,7 +82,7 @@ auto assignment(Fn fn) {
         rhs->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
         auto b = engine->pop();
-        fn(a.ref(lhs->line), b.val(), rhs->line);
+        fn(a.ref(), b.val());
         engine->push(a);
     };
 }
@@ -97,7 +97,7 @@ auto simpleAssignment(Fn fn) {
         rhs->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
         auto b = engine->pop();
-        std::visit(fn, a.ref(lhs->line)->asNumber(lhs->line), b.val().asNumber(rhs->line));
+        std::visit(fn, a.ref()->asNumber(), b.val().asNumber());
         engine->push(a);
     };
 }
@@ -111,26 +111,26 @@ auto intAssignment(Fn fn, Assertion* an = noop_assert) {
         auto a = engine->pop();
         rhs->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        int_t b = engine->pop().val().asInt(lhs->line);
-        an(b, rhs->line);
-        fn(a.ref(lhs->line)->asInt(lhs->line), b);
+        int_t b = engine->pop().val().asInt();
+        an(b);
+        fn(a.ref()->asInt(), b);
         engine->push(a);
     };
 }
 
 const std::vector<Operator> OPERATORS[14] = {
         {
-                {"throw", unary([] (ScriptEngine* engine, int line) {
-                    engine->jump(JumpTarget::THROW, line, engine->pop().val());
+                {"throw", unary([] (ScriptEngine* engine, SourceLocation location) {
+                    engine->jump(JumpTarget::THROW, location, engine->pop().val());
                 })},
-                {"break", unary([] (ScriptEngine* engine, int line) {
-                    engine->jump(JumpTarget::BREAK, line, engine->pop().val());
+                {"break", unary([] (ScriptEngine* engine, SourceLocation location) {
+                    engine->jump(JumpTarget::BREAK, location, engine->pop().val());
                 })},
-                {"continue", unary([] (ScriptEngine* engine, int line) {
-                    engine->jump(JumpTarget::CONTINUE, line, engine->pop().val());
+                {"continue", unary([] (ScriptEngine* engine, SourceLocation location) {
+                    engine->jump(JumpTarget::CONTINUE, location, engine->pop().val());
                 })},
-                {"return", unary([] (ScriptEngine* engine, int line) {
-                    engine->jump(JumpTarget::RETURN, line, engine->pop().val());
+                {"return", unary([] (ScriptEngine* engine, SourceLocation location) {
+                    engine->jump(JumpTarget::RETURN, location, engine->pop().val());
                 })},
                 {":=", [](ExprNode* lhs, ExprNode* rhs) {
                     auto* engine = rhs->engine;
@@ -139,19 +139,19 @@ const std::vector<Operator> OPERATORS[14] = {
                     if (auto* ref = dynamic_cast<RefNode*>(lhs))
                         ref->initialize();
                     else
-                        throw RuntimeError("initialization must be directly applied to id-expression" + at(lhs->line));
+                        throw RuntimeError("initialization must be directly applied to id-expression" + lhs->location.at());
                 }},
-                {"=",  assignment([](Object* lhs, Object rhs, int line) {
-                    *lhs = rhs.cast(lhs->type(), line);
+                {"=",  assignment([](Object* lhs, Object rhs) {
+                    *lhs = rhs.cast(lhs->type());
                 })},
                 {"+=", simpleAssignment([](auto* lhs, auto* rhs) { *lhs += *rhs; })},
                 {"-=", simpleAssignment([](auto* lhs, auto* rhs) { *lhs -= *rhs; })},
                 {"*=", simpleAssignment([](auto* lhs, auto* rhs) { *lhs *= *rhs; })},
-                {"/=", assignment([](Object* lhs, Object rhs, int line) {
+                {"/=", assignment([](Object* lhs, Object rhs) {
                     std::visit(overloaded {
-                            [line](int_t* lhs, auto* rhs) { division_assert(*rhs, line); *lhs /= *rhs; },
+                            [](int_t* lhs, auto* rhs) { division_assert(*rhs); *lhs /= *rhs; },
                             [](auto* lhs, auto* rhs) { *lhs /= *rhs; }
-                    }, lhs->asNumber(line), rhs.asNumber(line));
+                    }, lhs->asNumber(), rhs.asNumber());
                 })},
                 {"%=", intAssignment([](int_t& lhs, int_t rhs) { lhs %= rhs; }, division_assert)},
                 {"<<=",intAssignment([](int_t& lhs, int_t rhs) { lhs <<= rhs; }, shift_assert)},
@@ -165,7 +165,7 @@ const std::vector<Operator> OPERATORS[14] = {
             auto* engine = lhs->engine;
             lhs->push();
             if (engine->jumpTarget != JumpTarget::NONE) return;
-            if (engine->top().val().asBool(lhs->line)) return;
+            if (engine->top().val().asBool()) return;
             engine->pop();
             rhs->push();
         }}},
@@ -173,7 +173,7 @@ const std::vector<Operator> OPERATORS[14] = {
             auto* engine = lhs->engine;
             lhs->push();
             if (engine->jumpTarget != JumpTarget::NONE) return;
-            if (!engine->top().val().asBool(lhs->line)) return;
+            if (!engine->top().val().asBool()) return;
             engine->pop();
             rhs->push();
         }}},
@@ -211,40 +211,40 @@ const std::vector<Operator> OPERATORS[14] = {
                     if (engine->jumpTarget != JumpTarget::NONE) return;
                     auto b = engine->pop();
                     engine->push(std::visit(overloaded {
-                            [line = rhs->line](int_t* lhs, int_t* rhs) { division_assert(*rhs, line); return Object{*lhs / *rhs}; },
+                            [](int_t* lhs, int_t* rhs) { division_assert(*rhs); return Object{*lhs / *rhs}; },
                             [](auto* lhs, auto* rhs) { return Object{*lhs / *rhs}; }
-                    }, a.val().asNumber(lhs->line), b.val().asNumber(rhs->line)));
+                    }, a.val().asNumber(), b.val().asNumber()));
                 }},
                 {"%", intBinary(std::modulus<int_t>{}, division_assert)}
         },
         {
-                {"++", unary([](ScriptEngine* engine, int line) {
+                {"++", unary([](ScriptEngine* engine, SourceLocation location) {
                     auto a = engine->pop();
-                    ++a.ref(line)->asInt(line);
+                    ++a.ref()->asInt();
                     engine->push(a);
                 })},
-                {"--", unary([](ScriptEngine* engine, int line) {
+                {"--", unary([](ScriptEngine* engine, SourceLocation location) {
                     auto a = engine->pop();
-                    --a.ref(line)->asInt(line);
+                    --a.ref()->asInt();
                     engine->push(a);
                 })},
-                {"+", unary([](ScriptEngine*, int){})},
-                {"-", unary([](ScriptEngine* engine, int line) {
-                    engine->push(std::visit([](auto* a) { return Object{-*a}; }, engine->pop().val().asNumber(line)));
+                {"+", unary([](ScriptEngine*, SourceLocation){})},
+                {"-", unary([](ScriptEngine* engine, SourceLocation location) {
+                    engine->push(std::visit([](auto* a) { return Object{-*a}; }, engine->pop().val().asNumber()));
                 })},
-                {"!", unary([](ScriptEngine* engine, int line) {
-                    engine->push(Object{!engine->pop().val().asBool(line)});
+                {"!", unary([](ScriptEngine* engine, SourceLocation location) {
+                    engine->push(Object{!engine->pop().val().asBool()});
                 })},
-                {"~", unary([](ScriptEngine* engine, int line) {
-                    engine->push(Object{~engine->top().val().asInt(line)});
+                {"~", unary([](ScriptEngine* engine, SourceLocation location) {
+                    engine->push(Object{~engine->top().val().asInt()});
                 })}
         },
         {
-                {"++", unary([](ScriptEngine* engine, int line) {
-                    engine->push(Object{engine->pop().ref(line)->asInt(line)++});
+                {"++", unary([](ScriptEngine* engine, SourceLocation location) {
+                    engine->push(Object{engine->pop().ref()->asInt()++});
                 })},
-                {"--", unary([](ScriptEngine* engine, int line) {
-                    engine->push(Object{engine->pop().ref(line)->asInt(line)--});
+                {"--", unary([](ScriptEngine* engine, SourceLocation location) {
+                    engine->push(Object{engine->pop().ref()->asInt()--});
                 })}
         }
 };

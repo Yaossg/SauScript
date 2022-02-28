@@ -14,6 +14,6 @@ enum {
 inline int parse(std::string const& kw) {
     using namespace Keyword;
     auto first = std::begin(KW_TOKENS), last = std::end(KW_TOKENS);
-    return std::find(first, last, kw) - first;
+    return int(std::find(first, last, kw) - first);
 }
 }

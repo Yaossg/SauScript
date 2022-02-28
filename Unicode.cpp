@@ -1,14 +1,13 @@
 #include "Unicode.hpp"
 
-
 namespace SauScript::Unicode {
 
-[[noreturn]] void malformed(int line) {
-    throw SyntaxError("Malformed hexadecimal unicode" + at(line));
+[[noreturn]] void malformed() {
+    throw PlainRuntimeError("Malformed hexadecimal unicode");
 }
 
-[[noreturn]] void illegal(int line) {
-    throw SyntaxError("Illegal unicode value" + at(line));
+[[noreturn]] void illegal() {
+    throw PlainRuntimeError("Illegal unicode value");
 }
 
 [[nodiscard]] bool isSurrogate(char32_t ch) {
@@ -22,33 +21,33 @@ char32_t hex(char ch) {
     throw RuntimeError("Assertion failed");
 }
 
-char parseHexASCII(const char*& current, int line) {
+char parseHexASCII(const char*& current) {
     char8_t ch1 = *++current;
-    if (!('0' <= ch1 && ch1 < '8')) malformed(line);
+    if (!('0' <= ch1 && ch1 < '8')) malformed();
     char8_t ch2 = *++current;
-    if (!std::isxdigit(ch2)) malformed(line);
+    if (!std::isxdigit(ch2)) malformed();
     return char((hex(ch1) << 4) | hex(ch2));
 }
 
-char32_t parseHexUnicode(const char*& current, int line) {
+char32_t parseHexUnicode(const char*& current) {
     char8_t ch1 = *++current;
-    if (ch1 != '0' && ch1 != '1') malformed(line);
+    if (ch1 != '0' && ch1 != '1') malformed();
     char8_t ch2 = *++current;
-    if (!std::isxdigit(ch2) || ch1 == '1' && ch2 != '0') malformed(line);
+    if (!std::isxdigit(ch2) || ch1 == '1' && ch2 != '0') malformed();
     char8_t ch3 = *++current;
-    if (!std::isxdigit(ch3)) malformed(line);
+    if (!std::isxdigit(ch3)) malformed();
     char8_t ch4 = *++current;
-    if (!std::isxdigit(ch4)) malformed(line);
+    if (!std::isxdigit(ch4)) malformed();
     char8_t ch5 = *++current;
-    if (!std::isxdigit(ch5)) malformed(line);
+    if (!std::isxdigit(ch5)) malformed();
     char8_t ch6 = *++current;
-    if (!std::isxdigit(ch6)) malformed(line);
+    if (!std::isxdigit(ch6)) malformed();
     char32_t result = (hex(ch1) << 20) | (hex(ch2) << 16) | (hex(ch3) << 12) | (hex(ch4) << 8) | (hex(ch5) << 4) | hex(ch6);
-    if (isSurrogate(result)) illegal(line);
+    if (isSurrogate(result)) illegal();
     return result;
 }
 
-std::string encodeUnicode(char32_t unicode, int line) {
+std::string encodeUnicode(char32_t unicode) {
     if (unicode <= 0x7F) { // ASCII
         return {char(unicode)};
     } else if (unicode <= 0x7FF) { // 2 bytes
@@ -64,41 +63,41 @@ std::string encodeUnicode(char32_t unicode, int line) {
                 char(((unicode >> 6) & 0x3F) | 0x80),
                 char((unicode & 0x3F) | 0x80)};
     } else {
-        illegal(line);
+        illegal();
     }
 }
 
-char32_t decodeUnicode(const char*& current, int line) {
+char32_t decodeUnicode(const char*& current) {
     char32_t result;
     char8_t ch1 = *current;
     if (ch1 & 0x80) { // multibyte
         if (ch1 >> 5 == 0b110) { // 2 bytes
             char8_t ch2 = *++current;
-            if (ch2 >> 6 != 0b10) illegal(line);
+            if (ch2 >> 6 != 0b10) illegal();
             result = ((ch1 & ~0xC0) << 6) | (ch2 & ~0x80);
         } else if (ch1 >> 4 == 0b1110) { // 3 bytes
             char8_t ch2 = *++current;
-            if (ch2 >> 6 != 0b10) illegal(line);
+            if (ch2 >> 6 != 0b10) illegal();
             char8_t ch3 = *++current;
-            if (ch3 >> 6 != 0b10) illegal(line);
+            if (ch3 >> 6 != 0b10) illegal();
             result = ((ch1 & ~0xE0) << 12) | ((ch2 & ~0x80) << 6) | (ch3 & ~0x80);
         } else if (ch1 >> 3 == 0b11110) { // 4 bytes
             char8_t ch2 = *++current;
-            if (ch2 >> 6 != 0b10) illegal(line);
+            if (ch2 >> 6 != 0b10) illegal();
             char8_t ch3 = *++current;
-            if (ch3 >> 6 != 0b10) illegal(line);
+            if (ch3 >> 6 != 0b10) illegal();
             char8_t ch4 = *++current;
-            if (ch4 >> 6 != 0b10) illegal(line);
+            if (ch4 >> 6 != 0b10) illegal();
             result = ((ch1 & ~0xF0) << 18) | ((ch2 & ~0x80) << 12) | ((ch3 & ~0x80) << 6) | (ch4 & ~0x80);
         } else {
-            illegal(line);
+            illegal();
         }
     } else result = ch1;
-    if (isSurrogate(result)) illegal(line);
+    if (isSurrogate(result)) illegal();
     return result;
 }
 
-int decodeUnicode(std::function<int()> current, int line) {
+int decodeUnicode(std::function<int()> const& current) {
     char32_t result;
     int ch1 = current();
     if (ch1 == EOF) return EOF;
@@ -106,36 +105,36 @@ int decodeUnicode(std::function<int()> current, int line) {
         if (ch1 >> 5 == 0b110) { // 2 bytes
             int ch2 = current();
             if (ch2 == EOF) return EOF;
-            if (ch2 >> 6 != 0b10) illegal(line);
+            if (ch2 >> 6 != 0b10) illegal();
             result = ((ch1 & ~0xC0) << 6) | (ch2 & ~0x80);
         } else if (ch1 >> 4 == 0b1110) { // 3 bytes
             int ch2 = current();
             if (ch2 == EOF) return EOF;
-            if (ch2 >> 6 != 0b10) illegal(line);
+            if (ch2 >> 6 != 0b10) illegal();
             int ch3 = current();
             if (ch3 == EOF) return EOF;
-            if (ch3 >> 6 != 0b10) illegal(line);
+            if (ch3 >> 6 != 0b10) illegal();
             result = ((ch1 & ~0xE0) << 12) | ((ch2 & ~0x80) << 6) | (ch3 & ~0x80);
         } else if (ch1 >> 3 == 0b11110) { // 4 bytes
             int ch2 = current();
             if (ch2 == EOF) return EOF;
-            if (ch2 >> 6 != 0b10) illegal(line);
+            if (ch2 >> 6 != 0b10) illegal();
             int ch3 = current();
             if (ch3 == EOF) return EOF;
-            if (ch3 >> 6 != 0b10) illegal(line);
+            if (ch3 >> 6 != 0b10) illegal();
             int ch4 = current();
             if (ch4 == EOF) return EOF;
-            if (ch4 >> 6 != 0b10) illegal(line);
+            if (ch4 >> 6 != 0b10) illegal();
             result = ((ch1 & ~0xF0) << 18) | ((ch2 & ~0x80) << 12) | ((ch3 & ~0x80) << 6) | (ch4 & ~0x80);
         } else {
-            illegal(line);
+            illegal();
         }
     } else result = ch1;
-    if (isSurrogate(result)) illegal(line);
+    if (isSurrogate(result)) illegal();
     return result;
 }
 
-char32_t unquoteCharacter(const char*& current, int line) {
+char32_t unquoteCharacter(const char*& current) {
     char32_t result;
     char8_t ch1 = *++current;
     if (ch1 == '\\') {
@@ -152,53 +151,53 @@ char32_t unquoteCharacter(const char*& current, int line) {
             case 't': result = '\t'; break;
             case 'v': result = '\v'; break;
             case 'x': { // ASCII literal
-                result = parseHexASCII(current, line);
+                result = parseHexASCII(current);
                 break;
             }
             case 'u': { // Unicode literal
-                result = parseHexUnicode(current, line);
+                result = parseHexUnicode(current);
                 break;
             }
-            default: illegal(line);
+            default: illegal();
         }
     } else if (ch1 == '\'' || ch1 == '\n' || ch1 == '\0') {
-        illegal(line);
-    } else result = decodeUnicode(current, line);
-    if (*++current != '\'') illegal(line);
+        illegal();
+    } else result = decodeUnicode(current);
+    if (*++current != '\'') illegal();
     return result;
 }
 
-std::string unquoteString(const char*& current, int line) {
+std::string unquoteString(const char*& current) {
     std::string result;
     char8_t ch1;
     while ((ch1 = *++current) != '"') {
         if (ch1 & 0x80) { // multibyte
             if (ch1 >> 5 == 0b110) { // 2 bytes
                 char8_t ch2 = *++current;
-                if (ch2 >> 6 != 0b10) illegal(line);
+                if (ch2 >> 6 != 0b10) illegal();
                 result += ch1;
                 result += ch2;
             } else if (ch1 >> 4 == 0b1110) { // 3 bytes
                 char8_t ch2 = *++current;
-                if (ch2 >> 6 != 0b10) illegal(line);
+                if (ch2 >> 6 != 0b10) illegal();
                 char8_t ch3 = *++current;
-                if (ch3 >> 6 != 0b10) illegal(line);
+                if (ch3 >> 6 != 0b10) illegal();
                 result += ch1;
                 result += ch2;
                 result += ch3;
             } else if (ch1 >> 3 == 0b11110) { // 4 bytes
                 char8_t ch2 = *++current;
-                if (ch2 >> 6 != 0b10) illegal(line);
+                if (ch2 >> 6 != 0b10) illegal();
                 char8_t ch3 = *++current;
-                if (ch3 >> 6 != 0b10) illegal(line);
+                if (ch3 >> 6 != 0b10) illegal();
                 char8_t ch4 = *++current;
-                if (ch4 >> 6 != 0b10) illegal(line);
+                if (ch4 >> 6 != 0b10) illegal();
                 result += ch1;
                 result += ch2;
                 result += ch3;
                 result += ch4;
             } else {
-                illegal(line);
+                illegal();
             }
         } if (ch1 == '\\') {
             switch (*++current) {
@@ -214,25 +213,25 @@ std::string unquoteString(const char*& current, int line) {
                 case 't': result += '\t'; break;
                 case 'v': result += '\v'; break;
                 case 'x': { // ASCII literal
-                    result += parseHexASCII(current, line);
+                    result += parseHexASCII(current);
                     break;
                 }
                 case 'u': { // Unicode literal
-                    result += encodeUnicode(parseHexUnicode(current, line), line);
+                    result += encodeUnicode(parseHexUnicode(current));
                     break;
                 }
-                default: illegal(line);
+                default: illegal();
             }
         } else if (ch1 == '\n' || ch1 == '\0') {
-            illegal(line);
+            illegal();
         } else result += ch1;
     }
     return result;
 }
 
 
-std::string escape(char32_t unicode, int line) {
-    if (unicode > 0x10FFFF || isSurrogate(unicode)) illegal(line);
+std::string escape(char32_t unicode) {
+    if (unicode > 0x10FFFF || isSurrogate(unicode)) illegal();
     if (unicode <= 0x7F) {
         switch (char ASCII = char(unicode); ASCII) {
             case '\'': return "\\\'";
@@ -261,14 +260,14 @@ std::string escape(char32_t unicode, int line) {
     return result;
 }
 
-std::string quote(char32_t unicode, int line) {
-    return '\'' + escape(unicode, line) + '\'';
+std::string quote(char32_t unicode) {
+    return '\'' + escape(unicode) + '\'';
 }
 
-std::string quote(std::string string, int line) {
+std::string quote(std::string string) {
     std::string result;
     for (const char* current = string.data(); *current; ++current)
-        result += escape(decodeUnicode(current, line), line);
+        result += escape(decodeUnicode(current));
     return '"' + result + '"';
 }
 

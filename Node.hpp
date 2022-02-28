@@ -10,11 +10,16 @@ namespace SauScript {
 struct ExprNode {
     std::string descriptor;
     ScriptEngine* engine;
-    int line;
-    ExprNode(std::string descriptor, ScriptEngine* engine, int line)
-        : descriptor(std::move(descriptor)), engine(engine), line(line) {}
+    SourceLocation location;
+    ExprNode(std::string descriptor, ScriptEngine* engine, SourceLocation location)
+        : descriptor(std::move(descriptor)), engine(engine), location(location) {}
 
-    virtual void push() const = 0;
+    void push() const try {
+        do_push();
+    } catch (PlainRuntimeError& pre) {
+        pre.rethrow(location);
+    }
+    virtual void do_push() const = 0;
     [[nodiscard]] virtual std::vector<ExprNode*> children() const { return {}; }
     [[nodiscard]] virtual std::string toString() const { return descriptor; }
 
@@ -30,10 +35,10 @@ struct ExprNode {
 private:
     void walk(std::string& buf, int& id) const {
         std::string pid = std::to_string(id);
-        buf += "id_" + pid + "[\"" + descriptor + "\"]\n";
+        buf += pid + "[\"" + descriptor + "\"]\n";
         for (auto&& child : children()) {
             ++id;
-            buf += "id_" + pid + "-->" + "id_" + std::to_string(id) + "\n";
+            buf += pid + "-->" + std::to_string(id) + "\n";
             child->walk(buf, id);
         }
     }
@@ -41,18 +46,18 @@ private:
 
 struct ValNode : ExprNode {
     Object val;
-    ValNode(ScriptEngine* engine, int line, Object val): ExprNode(
+    ValNode(ScriptEngine* engine, SourceLocation location, Object val): ExprNode(
             val.type() == Type::FUNC ? get<func_t>(val.object)->descriptor() : val.toString(),
-            engine, line), val(std::move(val)) {}
+            engine, location), val(std::move(val)) {}
 
-    void push() const override {
+    void do_push() const override {
         engine->push(val);
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         if (val.type() == Type::FUNC) {
             auto&& fn = *get<func_t>(val.object);
-            return {fn.stmt.get()};
+            return {fn.expr.get()};
         }
         return {};
     }
@@ -64,16 +69,17 @@ struct ValNode : ExprNode {
 
 struct RefNode : ExprNode {
     std::string name;
-    RefNode(ScriptEngine* engine, int line, std::string name): ExprNode(name, engine, line), name(std::move(name)) {}
+    RefNode(ScriptEngine* engine, SourceLocation location, std::string name): ExprNode(name, engine, location), name(std::move(name)) {}
 
-    void push() const override {
-        engine->push(engine->findOperand(name, line));
+    void do_push() const override {
+        engine->push(engine->findOperand(name));
     }
 
     void initialize() {
+        auto rhs = engine->pop().val();
         if (engine->local().contains(name))
-            throw RuntimeError(name + " already exists in the local scope" + at(line));
-        engine->push(&(engine->local()[name] = engine->pop().val()));
+            throw RuntimeError("redefinition of '" + name + "' in the local scope" + location.at());
+        engine->push(&(engine->local()[name] = rhs));
     }
 };
 
@@ -81,12 +87,12 @@ struct OpUnaryNode : ExprNode {
     std::unique_ptr<ExprNode> operand;
     Operator const* op;
     bool postfix;
-    OpUnaryNode(ScriptEngine* engine, int line,
+    OpUnaryNode(ScriptEngine* engine, SourceLocation location,
                 std::unique_ptr<ExprNode> operand,
-                Operator const* op, bool postfix = false): ExprNode(std::string(op->literal), engine, line),
+                Operator const* op, bool postfix = false): ExprNode(std::string(op->literal), engine, location),
                 operand(std::move(operand)), op(op), postfix(postfix) {}
 
-    void push() const override {
+    void do_push() const override {
         op->asUnary()(operand.get());
     }
 
@@ -105,13 +111,13 @@ struct OpUnaryNode : ExprNode {
 struct OpBinaryNode : ExprNode {
     std::unique_ptr<ExprNode> lhs, rhs;
     Operator const* op;
-    OpBinaryNode(ScriptEngine* engine, int line,
+    OpBinaryNode(ScriptEngine* engine, SourceLocation location,
                  std::unique_ptr<ExprNode> lhs,
                  std::unique_ptr<ExprNode> rhs,
-                 Operator const* op): ExprNode(std::string(op->literal), engine, line),
+                 Operator const* op): ExprNode(std::string(op->literal), engine, location),
                  lhs(std::move(lhs)), rhs(std::move(rhs)), op(op) {}
 
-    void push() const override {
+    void do_push() const override {
         op->asBinary()(lhs.get(), rhs.get());
     }
 
@@ -126,16 +132,16 @@ struct OpBinaryNode : ExprNode {
 
 struct OpTernaryNode : ExprNode {
     std::unique_ptr<ExprNode> cond, lhs, rhs;
-    OpTernaryNode(ScriptEngine* engine, int line,
+    OpTernaryNode(ScriptEngine* engine, SourceLocation location,
                   std::unique_ptr<ExprNode> cond,
                   std::unique_ptr<ExprNode> lhs,
-                  std::unique_ptr<ExprNode> rhs): ExprNode("?:", engine, line),
+                  std::unique_ptr<ExprNode> rhs): ExprNode("?:", engine, location),
                   cond(std::move(cond)), lhs(std::move(lhs)), rhs(std::move(rhs)) {}
 
-    void push() const override {
+    void do_push() const override {
         cond->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        engine->pop().val().asBool(line) ? lhs->push() : rhs->push();
+        engine->pop().val().asBool() ? lhs->push() : rhs->push();
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -150,20 +156,20 @@ struct OpTernaryNode : ExprNode {
 struct OpIndexNode : ExprNode {
     std::unique_ptr<ExprNode> list;
     std::unique_ptr<ExprNode> index;
-    OpIndexNode(ScriptEngine* engine, int line,
+    OpIndexNode(ScriptEngine* engine, SourceLocation location,
                 std::unique_ptr<ExprNode> list,
-                std::unique_ptr<ExprNode> index): ExprNode("[]", engine, line),
+                std::unique_ptr<ExprNode> index): ExprNode("[]", engine, location),
                 list(std::move(list)), index(std::move(index)) {}
 
-    void push() const override {
+    void do_push() const override {
         list->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
         auto t = engine->pop();
         auto a = std::get<list_t>(t.val().object);
         index->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        auto b = engine->pop().val().asInt(line);
-        if (b < 0 || b >= a->objs.size()) throw RuntimeError("list index access out of bound" + at(line));
+        auto b = engine->pop().val().asInt();
+        if (b < 0 || b >= a->objs.size()) throw RuntimeError("list index access out of bound" + location.at());
         if (t.val_or_ref.index())
             engine->push(&a->objs.at(b));
         else
@@ -182,12 +188,12 @@ struct OpIndexNode : ExprNode {
 struct OpInvokeNode : ExprNode {
     std::unique_ptr<ExprNode> func;
     std::vector<std::unique_ptr<ExprNode>> args;
-    OpInvokeNode(ScriptEngine* engine, int line,
+    OpInvokeNode(ScriptEngine* engine, SourceLocation location,
                  std::unique_ptr<ExprNode> func,
-                 std::vector<std::unique_ptr<ExprNode>> args): ExprNode("()", engine, line),
+                 std::vector<std::unique_ptr<ExprNode>> args): ExprNode("()", engine, location),
                  func(std::move(func)), args(std::move(args)) {}
 
-    void push() const override {
+    void do_push() const override {
         std::vector<Object> objects;
         for (auto&& arg : args) {
             arg->push();
@@ -196,7 +202,7 @@ struct OpInvokeNode : ExprNode {
         }
         func->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        engine->pop().val().invoke(engine, line, objects);
+        engine->pop().val().invoke(engine, objects);
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -223,11 +229,11 @@ struct OpInvokeNode : ExprNode {
 
 struct ListLiteralNode : ExprNode {
     std::vector<std::unique_ptr<ExprNode>> objs;
-    ListLiteralNode(ScriptEngine* engine, int line,
-                    std::vector<std::unique_ptr<ExprNode>> objs): ExprNode("[]", engine, line),
+    ListLiteralNode(ScriptEngine* engine, SourceLocation location,
+                    std::vector<std::unique_ptr<ExprNode>> objs): ExprNode("[]", engine, location),
                     objs(std::move(objs)) {}
 
-    void push() const override {
+    void do_push() const override {
         std::vector<Object> objects;
         for (auto&& obj : objs) {
             obj->push();
@@ -257,20 +263,12 @@ struct ListLiteralNode : ExprNode {
     }
 };
 
-struct NoopNode : ExprNode {
-    NoopNode(ScriptEngine* engine, int line): ExprNode("{}", engine, line) {}
-
-    void push() const override {
-        engine->push({});
-    }
-};
-
 struct StmtsNode : ExprNode {
     std::vector<std::unique_ptr<ExprNode>> stmts;
-    StmtsNode(ScriptEngine* engine, int line, std::vector<std::unique_ptr<ExprNode>> stmts)
-        : ExprNode("{}", engine, line), stmts(std::move(stmts)) {}
+    StmtsNode(ScriptEngine* engine, SourceLocation location, std::vector<std::unique_ptr<ExprNode>> stmts)
+        : ExprNode("{}", engine, location), stmts(std::move(stmts)) {}
 
-    void push() const override {
+    void do_push() const override {
         ScriptScope scope(engine);
         push_unscoped();
     }
@@ -317,18 +315,18 @@ struct StmtsNode : ExprNode {
 struct WhileNode : ExprNode {
     std::unique_ptr<ExprNode> cond;
     std::unique_ptr<ExprNode> loop;
-    WhileNode(ScriptEngine* engine, int line,
+    WhileNode(ScriptEngine* engine, SourceLocation location,
               std::unique_ptr<ExprNode> cond,
-              std::unique_ptr<ExprNode> loop): ExprNode("while", engine, line),
+              std::unique_ptr<ExprNode> loop): ExprNode("while", engine, location),
               cond(std::move(cond)), loop(std::move(loop)) {}
 
-    void push() const override {
+    void do_push() const override {
         ScriptScope scope(engine);
         std::vector<Object> yield;
         begin:
         cond->push();
         if (engine->jumpTarget == JumpTarget::NONE) {
-            if (!engine->pop().val().asBool(line)) goto end;
+            if (!engine->pop().val().asBool()) goto end;
             loop->push();
             if (engine->jumpTarget == JumpTarget::NONE)
                 engine->pop().val().yield(yield);
@@ -362,14 +360,14 @@ struct ForNode : ExprNode {
     std::unique_ptr<ExprNode> cond;
     std::unique_ptr<StmtsNode> iter;
     std::unique_ptr<ExprNode> loop;
-    ForNode(ScriptEngine* engine, int line,
+    ForNode(ScriptEngine* engine, SourceLocation location,
             std::unique_ptr<StmtsNode> init,
             std::unique_ptr<ExprNode> cond,
             std::unique_ptr<StmtsNode> iter,
-            std::unique_ptr<ExprNode> loop): ExprNode("for", engine, line),
+            std::unique_ptr<ExprNode> loop): ExprNode("for", engine, location),
             init(std::move(init)), cond(std::move(cond)), iter(std::move(iter)), loop(std::move(loop)) {}
 
-    void push() const override {
+    void do_push() const override {
         ScriptScope scope(engine);
         std::vector<Object> yield;
         init->push_unscoped();
@@ -378,7 +376,7 @@ struct ForNode : ExprNode {
         begin:
         cond->push();
         if (engine->jumpTarget == JumpTarget::NONE) {
-            if (!engine->pop().val().asBool(line)) goto end;
+            if (!engine->pop().val().asBool()) goto end;
             loop->push();
             if (engine->jumpTarget == JumpTarget::NONE)
                 engine->pop().val().yield(yield);
@@ -413,18 +411,18 @@ struct ForEachNode : ExprNode {
     std::string name;
     std::unique_ptr<ExprNode> iter;
     std::unique_ptr<ExprNode> loop;
-    ForEachNode(ScriptEngine* engine, int line,
+    ForEachNode(ScriptEngine* engine, SourceLocation location,
                 std::string name,
                 std::unique_ptr<ExprNode> iter,
-                std::unique_ptr<ExprNode> loop): ExprNode("for-each " + name, engine, line),
+                std::unique_ptr<ExprNode> loop): ExprNode("for-each " + name, engine, location),
                 name(std::move(name)), iter(std::move(iter)), loop(std::move(loop)) {}
 
-    void push() const override {
+    void do_push() const override {
         ScriptScope scope(engine);
         std::vector<Object> yield;
         iter->push();
         if (engine->jumpTarget == JumpTarget::NONE) {
-            for (auto list = engine->pop().val().iterable(line); auto&& obj : list->objs) {
+            for (auto list = engine->pop().val().iterable(); auto&& obj : list->objs) {
                 engine->local()[name] = obj;
                 loop->push();
                 if (engine->jumpTarget == JumpTarget::NONE)
@@ -457,17 +455,17 @@ struct IfElseNode : ExprNode {
     std::unique_ptr<ExprNode> cond;
     std::unique_ptr<ExprNode> then;
     std::unique_ptr<ExprNode> else_;
-    IfElseNode(ScriptEngine* engine, int line,
+    IfElseNode(ScriptEngine* engine, SourceLocation location,
                std::unique_ptr<ExprNode> cond,
                std::unique_ptr<ExprNode> then,
-               std::unique_ptr<ExprNode> else_): ExprNode("if-else", engine, line),
+               std::unique_ptr<ExprNode> else_): ExprNode("if-else", engine, location),
                cond(std::move(cond)), then(std::move(then)), else_(std::move(else_)) {}
 
-    void push() const override {
+    void do_push() const override {
         ScriptScope scope(engine);
         cond->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        engine->pop().val().asBool(line) ? then->push() : else_->push();
+        engine->pop().val().asBool() ? then->push() : else_->push();
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -483,13 +481,13 @@ struct TryCatchNode : ExprNode {
     std::unique_ptr<ExprNode> try_;
     std::string name;
     std::unique_ptr<ExprNode> catch_;
-    TryCatchNode(ScriptEngine* engine, int line,
+    TryCatchNode(ScriptEngine* engine, SourceLocation location,
                  std::unique_ptr<ExprNode> try_,
                  std::string name,
-                 std::unique_ptr<ExprNode> catch_): ExprNode("try-catch", engine, line),
+                 std::unique_ptr<ExprNode> catch_): ExprNode("try-catch", engine, location),
                  try_(std::move(try_)), name(std::move(name)), catch_(std::move(catch_)) {}
 
-    void push() const override {
+    void do_push() const override {
         {
             ScriptScope scope(engine);
             try_->push();
@@ -516,15 +514,15 @@ struct ExternalFunctionInvocationNode : ExprNode {
     std::function<R(Args...)> function;
 
     ExternalFunctionInvocationNode(ScriptEngine *engine, std::function<R(Args...)> function)
-            : ExprNode("<external function invocation>", engine, 0), function(function) {}
+            : ExprNode("<external function invocation>", engine, {}), function(function) {}
 
-    void push() const override {
+    void do_push() const override {
         engine->push(eval(std::index_sequence_for<Args...>()));
     }
 
     template<size_t... I>
     Object eval(std::index_sequence<I...>) const {
-        auto functor = std::bind(function, engine->findOperand(externalParameterName<I>(), 0).val().template as<Args>()...);
+        auto functor = std::bind(function, engine->findOperand(externalParameterName<I>()).val().template as<Args>()...);
         if constexpr(std::is_void_v<R>) {
             functor();
             return {};

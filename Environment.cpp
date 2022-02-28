@@ -16,7 +16,7 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("real",     [](int_t x) { return real_t(x); });
 
     engine->installExternalFunction("putchar",  [out = engine->out](int_t ch) {
-        std::fprintf(out, "%s", Unicode::encodeUnicode(ch, 0).c_str());
+        std::fprintf(out, "%s", Unicode::encodeUnicode(ch).c_str());
     });
     engine->installExternalFunction("print",    [out = engine->out]() {
         std::fprintf(out, " ");
@@ -37,14 +37,14 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("readInt",  [in = engine->in] {
         int_t x;
         if (!std::fscanf(in, "%lld", &x))
-            throw RuntimeError("invalid int input");
+            throw PlainRuntimeError("invalid int input");
         fgetc(in);
         return x;
     });
     engine->installExternalFunction("readReal", [in = engine->in] {
         real_t x;
         if (!std::fscanf(in, "%lf", &x))
-            throw RuntimeError("invalid real input");
+            throw PlainRuntimeError("invalid real input");
         fgetc(in);
         return x;
     });
@@ -64,11 +64,11 @@ void installEnvironment(ScriptEngine* engine) {
         } else for (auto&& obj : objs->objs) list->objs.push_back(obj);
     });
     engine->installExternalFunction("insert",   [](list_t list, int_t index, Object obj) {
-        if (index < 0 || index > list->objs.size()) throw RuntimeError("[List::insert]: index out of bound");
+        if (index < 0 || index > list->objs.size()) throw PlainRuntimeError("[List::insert]: index out of bound");
         list->objs.insert(list->objs.begin() + index, obj);
     });
     engine->installExternalFunction("removeAt", [](list_t list, int_t index) {
-        if (index < 0 || index >= list->objs.size()) throw RuntimeError("[List::erase]: index out of bound");
+        if (index < 0 || index >= list->objs.size()) throw PlainRuntimeError("[List::erase]: index out of bound");
         list->objs.erase(list->objs.begin() + index);
     });
     engine->installExternalFunction("remove",   [](list_t list, Object obj) {
@@ -85,14 +85,14 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("reverse",  [](list_t list) { std::reverse(list->objs.begin(), list->objs.end()); });
     engine->installExternalFunction("sort",     [engine](list_t list, func_t comparator) {
         std::sort(list->objs.begin(), list->objs.end(), [engine, &comparator](Object const& a, Object const& b) {
-            comparator->invoke(engine, 0, {a, b});
-            return engine->pop().val().asBool(0);
+            comparator->invoke(engine, {a, b});
+            return engine->pop().val().asBool();
         });
     });
     engine->installExternalFunction("map",      [engine](list_t list, func_t mapper) {
         std::vector<Object> result;
         for (auto&& obj : list->objs) {
-            mapper->invoke(engine, 0, {obj});
+            mapper->invoke(engine, {obj});
             result.push_back(engine->pop().val());
         }
         return std::make_shared<List>(result);
@@ -100,8 +100,8 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("filter",   [engine](list_t list, func_t filter) {
         std::vector<Object> result;
         for (auto&& obj : list->objs) {
-            filter->invoke(engine, 0, {obj});
-            if (engine->pop().val().asBool(0))
+            filter->invoke(engine, {obj});
+            if (engine->pop().val().asBool())
                 result.push_back(obj);
         }
         return std::make_shared<List>(result);

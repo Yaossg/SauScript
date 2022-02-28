@@ -15,41 +15,51 @@ std::string Function::descriptor() const {
 }
 
 std::string Function::toString() const {
-    std::string ret = descriptor();
-    ret += " = {";
-    ret += stmt->toString();
-    ret += "}";
+    std::string ret = "(";
+    ret += descriptor();
+    ret += "=";
+    ret += expr->toString();
+    ret += ")";
     return ret;
 }
 
-void Function::invoke(ScriptEngine *engine, int line, const std::vector<Object> &arguments) const {
+void Function::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) const {
     if (parameters.size() != arguments.size())
-        throw RuntimeError("expected " + std::to_string(parameters.size()) + " argument(s) but got "
-                           + std::to_string(arguments.size()) + at(line));
+        throw PlainRuntimeError("expected " + std::to_string(parameters.size()) + " argument(s) but got "
+                           + std::to_string(arguments.size()));
     ScriptScope scope(engine);
     for (int i = 0; i < arguments.size(); ++i) {
         auto&& parameter = parameters[i];
         auto&& argument = arguments[i];
-        engine->local()[parameter.name] = argument.cast(parameter.type, line);
+        engine->local()[parameter.name] = argument.cast(parameter.type);
     }
-    stmt->push();
+    expr->push();
     switch (engine->jumpTarget) {
-        case JumpTarget::RETURN: {
-            engine->jumpTarget = JumpTarget::NONE;
-            engine->push(engine->yield.cast(returnType, engine->jumpFrom));
-        }
-        case JumpTarget::NONE:
         default:
+        case JumpTarget::NONE:
+            engine->yield = engine->pop().val();
+            if (auto* stmts = dynamic_cast<StmtsNode*>(expr.get()); stmts && !stmts->stmts.empty()) {
+                engine->jumpFrom = stmts->stmts.back()->location;
+            } else {
+                engine->jumpFrom = expr->location;
+            }
+        case JumpTarget::RETURN:
+            try {
+                engine->jumpTarget = JumpTarget::NONE;
+                engine->push(engine->yield.cast(returnType));
+            } catch (PlainRuntimeError& pre) {
+                pre.rethrow(engine->jumpFrom);
+            }
         case JumpTarget::THROW:
             return;
         case JumpTarget::BREAK:
-            throw RuntimeError("Wild break jump" + at(engine->jumpFrom));
+            throw PlainRuntimeError("Wild break jump" + engine->jumpFrom.at());
         case JumpTarget::CONTINUE:
-            throw RuntimeError("Wild continue jump" + at(engine->jumpFrom));
+            throw PlainRuntimeError("Wild continue jump" + engine->jumpFrom.at());
     }
 }
 
-void List::invoke(ScriptEngine *engine, int line, const std::vector<Object> &arguments) const {
+void List::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) const {
     std::vector<func_t> candidates;
     int least_promoted = arguments.size();
     for (auto&& obj : objs) {
@@ -76,17 +86,17 @@ void List::invoke(ScriptEngine *engine, int line, const std::vector<Object> &arg
         mismatch: ;
     }
     if (candidates.empty())
-        throw RuntimeError("no function is matched in the set of overloads" + at(line));
+        throw PlainRuntimeError("no function is matched in the set of overloads");
     if (candidates.size() > 1)
-        throw RuntimeError("multiple functions are matched in the set of overloads" + at(line));
-    candidates.front()->invoke(engine, line, arguments);
+        throw PlainRuntimeError("multiple functions are matched in the set of overloads");
+    candidates.front()->invoke(engine, arguments);
 }
 
-void Object::invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const {
+void Object::invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const {
     std::visit(overloaded {
-        [line] (auto x) { throw RuntimeError("not invocable" + at(line)); },
-        [&] (func_t const& func) { func->invoke(engine, line, arguments); },
-        [&] (list_t const& func) { func->invoke(engine, line, arguments); }
+        [] (auto x) { throw PlainRuntimeError("not invocable"); },
+        [&] (func_t const& func) { func->invoke(engine, arguments); },
+        [&] (list_t const& func) { func->invoke(engine, arguments); }
     }, object);
 }
 
@@ -113,7 +123,7 @@ std::string List::toString() const {
     for (auto&& obj : objs) {
         if (first) { first = false; } else { ret += ", "; }
         if (obj.type() == Type::LIST && get<list_t>(obj.object)->mark)
-            throw RuntimeError("[List::toString]: fatal recursive list");
+            throw PlainRuntimeError("[List::toString]: fatal recursive list");
         ret += obj.toString();
     }
     return ret + "]";

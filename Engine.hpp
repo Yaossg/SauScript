@@ -6,7 +6,7 @@
 #include <stack>
 #include <utility>
 
-#include "TypeSystem.hpp"
+#include "Token.hpp"
 
 namespace SauScript {
 
@@ -24,10 +24,12 @@ struct ScriptEngine {
     std::deque<Scope> scopes{{}, {}};
     FILE *out, *in;
     JumpTarget jumpTarget = JumpTarget::NONE;
-    int jumpFrom = 0;
+    SourceLocation jumpFrom;
     Object yield;
 
-    void jump(JumpTarget jumpTarget, int jumpFrom, Object yield) {
+    std::vector<std::unique_ptr<SourceCode>> compiled;
+
+    void jump(JumpTarget jumpTarget, SourceLocation jumpFrom, Object yield) {
         this->jumpTarget = jumpTarget;
         this->jumpFrom = jumpFrom;
         this->yield = std::move(yield);
@@ -49,7 +51,7 @@ struct ScriptEngine {
     template<typename Fn>
     void installExternalFunction(std::string const &name, Fn fn);
 
-    Operand findOperand(std::string const &name, int line);
+    Operand findOperand(std::string const &name);
 
     [[nodiscard]] std::unique_ptr<ExprNode> compileExpression(Token *&current, int level);
     [[nodiscard]] std::unique_ptr<ExprNode> compileWhile(Token *&current);
@@ -58,9 +60,9 @@ struct ScriptEngine {
     [[nodiscard]] std::unique_ptr<ExprNode> compileTryCatch(Token *&current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileFunction(Token *&current);
     [[nodiscard]] std::unique_ptr<StmtsNode> compileStatements(Token *&current);
-    [[nodiscard]] std::unique_ptr<StmtsNode> compile(char const *script);
+    [[nodiscard]] std::unique_ptr<StmtsNode> compile(std::string script);
 
-    void exec(char const *script, FILE *err = stderr);
+    void exec(std::string script, FILE *err = stderr);
 };
 
 struct ScriptScope {
@@ -76,10 +78,6 @@ struct ScriptScope {
         engine->scopes.pop_back();
     }
 };
-
-
-template<typename R, typename... Args>
-std::function<func_t(ScriptEngine*)> external(std::function<R(Args...)> function);
 
 template<typename Fn>
 void ScriptEngine::installExternalFunction(const std::string &name, Fn fn) {

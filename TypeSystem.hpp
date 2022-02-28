@@ -32,7 +32,7 @@ struct List {
         ~Guard() { list->mark = false; }
     };
 
-    void invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const;
+    void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 
     [[nodiscard]] std::string toString() const;
 };
@@ -75,11 +75,11 @@ struct Parameter {
 struct Function {
     Type returnType;
     std::vector<Parameter> parameters;
-    std::unique_ptr<ExprNode> stmt;
+    std::unique_ptr<ExprNode> expr;
 
     [[nodiscard]] std::string descriptor() const;
     [[nodiscard]] std::string toString() const;
-    void invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const;
+    void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 };
 
 template<size_t I>
@@ -103,36 +103,37 @@ struct Object {
         return std::string(nameOf(type()));
     }
 
-    [[nodiscard]] bool asBool(int line) const {
+    [[nodiscard]] bool asBool() const {
         if (type() == Type::INT)
             return std::get<int_t>(object) != 0;
-        throw RuntimeError("expected int as bool but got " + type_name() + at(line));
+        throw PlainRuntimeError("expected int as bool but got " + type_name());
     }
 
-    [[nodiscard]] int_t& asInt(int line) {
+    [[nodiscard]] int_t& asInt() {
         if (type() == Type::INT)
             return std::get<int_t>(object);
-        throw RuntimeError("expected int but got " + type_name() + at(line));
+        throw PlainRuntimeError("expected int but got " + type_name());
     }
 
-    [[nodiscard]] std::variant<int_t*, real_t*> asNumber(int line) {
+    [[nodiscard]] std::variant<int_t*, real_t*> asNumber() {
         switch (type()) {
             case Type::INT: return &std::get<int_t>(object);
             case Type::REAL: return &std::get<real_t>(object);
         }
-        throw RuntimeError("expected number but got " + type_name() + at(line));
+        throw PlainRuntimeError("expected number but got " + type_name());
     }
 
-    [[nodiscard]] Object cast(Type type, int line) const {
+    [[nodiscard]] Object cast(Type type) const {
+        if (type == Type::VOID) return {};
         if (type == Type::ANY || this->type() == type) return *this;
         if (this->type() == Type::INT && type == Type::REAL) return {(real_t)std::get<int_t>(object)};
-        throw RuntimeError("attempt to implicitly cast from " + type_name() + " to " + std::string(nameOf(type)) + at(line));
+        throw PlainRuntimeError("attempt to implicitly cast from " + type_name() + " to " + std::string(nameOf(type)));
     }
 
-    void invoke(ScriptEngine* engine, int line, std::vector<Object> const& arguments) const;
+    void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 
-    [[nodiscard]] list_t iterable(int line) const {
-        if (type() != Type::LIST) throw RuntimeError("not iterable" + at(line));
+    [[nodiscard]] list_t iterable() const {
+        if (type() != Type::LIST) throw PlainRuntimeError("not iterable");
         return std::get<list_t>(object);
     }
 
@@ -166,7 +167,7 @@ struct Object {
 
     bool operator<(Object const& other) const {
         return std::visit(overloaded {
-            [] (auto a, auto b) -> bool { throw RuntimeError("incomparable"); },
+            [] (auto a, auto b) -> bool { throw PlainRuntimeError("not comparable"); },
             [] (std::monostate, std::monostate) { return false; },
             [] (int_t a, int_t b) { return a < b; },
             [] (real_t a, real_t b) { return a < b; },
@@ -201,10 +202,10 @@ struct Operand {
         }, val_or_ref);
     }
 
-    [[nodiscard]] Object* ref(int line) const {
+    [[nodiscard]] Object* ref() const {
         if (std::holds_alternative<Object*>(val_or_ref))
             return std::get<Object*>(val_or_ref);
-        throw RuntimeError("rvalue cannot be used as lvalue" + at(line));
+        throw PlainRuntimeError("rvalue cannot be used as lvalue");
     }
 };
 }

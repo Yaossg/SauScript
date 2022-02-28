@@ -16,16 +16,16 @@ enum class TokenType {
 struct Token {
     TokenType type;
     std::variant<int, std::string, int_t, real_t> parameter;
-    int line = 0;
+    SourceLocation location;
     bool operator ==(Token const& other) const {
         return type == other.type && parameter == other.parameter;
     }
-    Token& at(int where) {
-        line = where;
+    Token& at(SourceLocation where) {
+        location = where;
         return *this;
     }
     [[nodiscard]] std::string at() const {
-        return SauScript::at(line);
+        return location.at();
     }
     [[nodiscard]] int keyword() const {
         return std::get<int>(parameter);
@@ -45,7 +45,15 @@ struct Token {
     [[nodiscard]] real_t literal_real() const {
         return std::get<real_t>(parameter);
     }
-    [[nodiscard]] Type parseType() const;
+    [[nodiscard]] Type parseType() const {
+        if (type != TokenType::IDENTIFIER) throw SyntaxError("expected type name" + at());
+        std::string name = identifier();
+        auto first = std::begin(TYPE_NAMES), last = std::end(TYPE_NAMES);
+        Type type = Type(std::find(first, last, name) - first);
+        if (type == Type::NAT)
+            throw SyntaxError("invalid type name" + at());
+        return type;
+    }
 
     static Token punctuator(std::string p) {
         return {TokenType::PUNCTUATOR, p};
@@ -91,6 +99,38 @@ struct Token {
     }
 };
 
-[[nodiscard]] std::vector<Token> tokenize(char const* current);
+// source code & tokenizer
+
+struct SourceCode {
+    std::string raw;
+    std::vector<std::string> lines;
+    std::vector<Token> tokens;
+
+    explicit SourceCode(std::string raw);
+
+private:
+    [[nodiscard]] int column() const {
+        return int(current - start + 1);
+    }
+
+    [[nodiscard]] SourceLocation location() const {
+        return {this, line, column()};
+    }
+
+    [[nodiscard]] std::string at() const {
+        return location().at();
+    }
+
+    void tokenize();
+
+private:
+    const char* current;
+    const char* start;
+    int line;
+
+    bool skipLineBreak(bool strict);
+    Token parseNumber();
+    Token parseIdentifier();
+};
 
 }
