@@ -10,6 +10,7 @@ namespace SauScript {
 
 void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("identity", [](Object object) { return object; });
+    engine->installExternalFunction("typeid",   [](Object object) { return (int_t)object.type(); });
 
     engine->installExternalFunction("int",      [](real_t x) { return int_t(x); });
     engine->installExternalFunction("real",     [](int_t x) { return real_t(x); });

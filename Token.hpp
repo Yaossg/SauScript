@@ -45,15 +45,8 @@ struct Token {
     [[nodiscard]] real_t literal_real() const {
         return std::get<real_t>(parameter);
     }
-    [[nodiscard]] Type parseType() const {
-        if (type != TokenType::IDENTIFIER) throw SyntaxError("expected type name" + at());
-        std::string name = identifier();
-        auto first = std::begin(TYPE_NAMES), last = std::end(TYPE_NAMES);
-        Type type = Type(std::find(first, last, name) - first);
-        if (type == Type::NAT)
-            throw SyntaxError("invalid type name" + at());
-        return type;
-    }
+    [[nodiscard]] Type parseType() const;
+
     static Token punctuator(std::string p) {
         return {TokenType::PUNCTUATOR, p};
     }
@@ -98,5 +91,6 @@ struct Token {
     }
 };
 
+[[nodiscard]] std::vector<Token> tokenize(char const* current);
 
 }
