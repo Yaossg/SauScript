@@ -16,8 +16,8 @@ struct ExprNode {
 
     void push() const try {
         do_push();
-    } catch (PlainRuntimeError& pre) {
-        pre.rethrow(location);
+    } catch (RawError& re) {
+        re.rethrow(location);
     }
     virtual void do_push() const = 0;
     [[nodiscard]] virtual std::vector<ExprNode*> children() const { return {}; }
@@ -78,7 +78,7 @@ struct RefNode : ExprNode {
     void initialize() {
         auto rhs = engine->pop().val();
         if (engine->local().contains(name))
-            throw RuntimeError("redefinition of '" + name + "' in the local scope" + location.at());
+            runtime("redefinition of '" + name + "' in the local scope", location);
         engine->push(&(engine->local()[name] = rhs));
     }
 };
@@ -94,6 +94,7 @@ struct OpUnaryNode : ExprNode {
 
     void do_push() const override {
         op->asUnary()(operand.get());
+        if (engine->jumpTarget != JumpTarget::NONE) engine->jumpFrom = location;
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -169,7 +170,7 @@ struct OpIndexNode : ExprNode {
         index->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
         auto b = engine->pop().val().asInt();
-        if (b < 0 || b >= a->objs.size()) throw RuntimeError("list index access out of bound" + location.at());
+        if (b < 0 || b >= a->objs.size()) runtime("list index access out of bound", location);
         if (t.val_or_ref.index())
             engine->push(&a->objs.at(b));
         else
@@ -202,7 +203,14 @@ struct OpInvokeNode : ExprNode {
         }
         func->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        engine->pop().val().invoke(engine, objects);
+        try {
+            engine->pop().val().invoke(engine, objects);
+        } catch (Error& e) {
+            e.descriptor += '\n';
+            e.descriptor += "  invoke from here";
+            e.descriptor += location.what();
+            throw;
+        }
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -356,21 +364,21 @@ struct WhileNode : ExprNode {
 };
 
 struct ForNode : ExprNode {
-    std::unique_ptr<StmtsNode> init;
+    std::unique_ptr<ExprNode> init;
     std::unique_ptr<ExprNode> cond;
-    std::unique_ptr<StmtsNode> iter;
+    std::unique_ptr<ExprNode> iter;
     std::unique_ptr<ExprNode> loop;
     ForNode(ScriptEngine* engine, SourceLocation location,
-            std::unique_ptr<StmtsNode> init,
+            std::unique_ptr<ExprNode> init,
             std::unique_ptr<ExprNode> cond,
-            std::unique_ptr<StmtsNode> iter,
+            std::unique_ptr<ExprNode> iter,
             std::unique_ptr<ExprNode> loop): ExprNode("for", engine, location),
             init(std::move(init)), cond(std::move(cond)), iter(std::move(iter)), loop(std::move(loop)) {}
 
     void do_push() const override {
         ScriptScope scope(engine);
         std::vector<Object> yield;
-        init->push_unscoped();
+        init->push();
         if (engine->jumpTarget != JumpTarget::NONE) goto end;
         engine->pop();
         begin:
@@ -386,7 +394,7 @@ struct ForNode : ExprNode {
             engine->yield.yield(yield);
         }
         if (engine->jumpTarget != JumpTarget::NONE) goto end;
-        iter->push_unscoped();
+        iter->push();
         engine->pop();
         goto begin;
         end:
@@ -403,7 +411,7 @@ struct ForNode : ExprNode {
     }
 
     [[nodiscard]] std::string toString() const override {
-        return "for " + init->toStringUnscoped() + ";" + cond->toString() + ";" + iter->toStringUnscoped() + loop->toString();
+        return "for " + init->toString() + ";" + cond->toString() + ";" + iter->toString() + loop->toString();
     }
 };
 
@@ -508,6 +516,16 @@ struct TryCatchNode : ExprNode {
         return "try" + try_->toString() + "catch " + name + catch_->toString();
     }
 };
+
+template<size_t I>
+std::string externalParameterName() {
+    return "$" + std::to_string(I);
+}
+
+template<typename... Args, size_t... I>
+std::vector<Parameter> externalParameters(std::index_sequence<I...>) {
+    return {{parseType<Args>(), externalParameterName<I>()}...};
+}
 
 template<typename R, typename... Args>
 struct ExternalFunctionInvocationNode : ExprNode {

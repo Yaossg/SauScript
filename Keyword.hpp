@@ -1,19 +1,22 @@
 #pragma once
 
+#include <map>
+
 #include "Lib.hpp"
 
-namespace SauScript::Keyword {
-const std::string_view KW_TOKENS[] =
-        {"while", "if", "else", "try", "catch", "for", "fn"};
-enum {
-    WHILE, IF, ELSE, TRY, CATCH, FOR, FN,
+namespace SauScript {
 
-    NAK // not a keyword
+enum class Keyword {
+    WHILE, IF, ELSE, TRY, CATCH, FOR, FN
 };
 
-inline int parse(std::string const& kw) {
-    using namespace Keyword;
-    auto first = std::begin(KW_TOKENS), last = std::end(KW_TOKENS);
-    return int(std::find(first, last, kw) - first);
-}
+inline std::map<std::string, Keyword> KEYWORDS{
+        {"while",   Keyword::WHILE  },
+        {"if",      Keyword::IF     },
+        {"else",    Keyword::ELSE   },
+        {"try",     Keyword::TRY    },
+        {"catch",   Keyword::CATCH  },
+        {"for",     Keyword::FOR    },
+        {"fn",      Keyword::FN     }
+};
 }

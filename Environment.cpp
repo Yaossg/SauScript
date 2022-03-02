@@ -37,14 +37,14 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("readInt",  [in = engine->in] {
         int_t x;
         if (!std::fscanf(in, "%lld", &x))
-            throw PlainRuntimeError("invalid int input");
+            runtime("invalid int input");
         fgetc(in);
         return x;
     });
     engine->installExternalFunction("readReal", [in = engine->in] {
         real_t x;
         if (!std::fscanf(in, "%lf", &x))
-            throw PlainRuntimeError("invalid real input");
+            runtime("invalid real input");
         fgetc(in);
         return x;
     });
@@ -64,11 +64,11 @@ void installEnvironment(ScriptEngine* engine) {
         } else for (auto&& obj : objs->objs) list->objs.push_back(obj);
     });
     engine->installExternalFunction("insert",   [](list_t list, int_t index, Object obj) {
-        if (index < 0 || index > list->objs.size()) throw PlainRuntimeError("[List::insert]: index out of bound");
+        if (index < 0 || index > list->objs.size()) runtime("index out of bound");
         list->objs.insert(list->objs.begin() + index, obj);
     });
     engine->installExternalFunction("removeAt", [](list_t list, int_t index) {
-        if (index < 0 || index >= list->objs.size()) throw PlainRuntimeError("[List::erase]: index out of bound");
+        if (index < 0 || index >= list->objs.size()) runtime("index out of bound");
         list->objs.erase(list->objs.begin() + index);
     });
     engine->installExternalFunction("remove",   [](list_t list, Object obj) {
@@ -86,13 +86,24 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("sort",     [engine](list_t list, func_t comparator) {
         std::sort(list->objs.begin(), list->objs.end(), [engine, &comparator](Object const& a, Object const& b) {
             comparator->invoke(engine, {a, b});
+            if (engine->jumpTarget != JumpTarget::NONE) runtime("external function callback do not process internal jump");
             return engine->pop().val().asBool();
         });
+    });
+    engine->installExternalFunction("generate", [engine](int_t size, func_t generator) {
+        std::vector<Object> result;
+        for (int_t i = 0; i < size; ++i) {
+            generator->invoke(engine, {{i}});
+            if (engine->jumpTarget != JumpTarget::NONE) runtime("external function callback do not process internal jump");
+            result.push_back(engine->pop().val());
+        }
+        return std::make_shared<List>(result);
     });
     engine->installExternalFunction("map",      [engine](list_t list, func_t mapper) {
         std::vector<Object> result;
         for (auto&& obj : list->objs) {
             mapper->invoke(engine, {obj});
+            if (engine->jumpTarget != JumpTarget::NONE) runtime("external function callback do not process internal jump");
             result.push_back(engine->pop().val());
         }
         return std::make_shared<List>(result);
@@ -101,10 +112,19 @@ void installEnvironment(ScriptEngine* engine) {
         std::vector<Object> result;
         for (auto&& obj : list->objs) {
             filter->invoke(engine, {obj});
+            if (engine->jumpTarget != JumpTarget::NONE) runtime("external function callback do not process internal jump");
             if (engine->pop().val().asBool())
                 result.push_back(obj);
         }
         return std::make_shared<List>(result);
+    });
+    engine->installExternalFunction("reduce",   [engine](list_t list, Object init, func_t folder) {
+        for (auto&& obj : list->objs) {
+            folder->invoke(engine, {init, obj});
+            if (engine->jumpTarget != JumpTarget::NONE) runtime("external function callback do not process internal jump");
+            init = engine->pop().val();
+        }
+        return init;
     });
 
     engine->installExternalFunction("ceil",     ::ceil);

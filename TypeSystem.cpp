@@ -25,8 +25,7 @@ std::string Function::toString() const {
 
 void Function::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) const {
     if (parameters.size() != arguments.size())
-        throw PlainRuntimeError("expected " + std::to_string(parameters.size()) + " argument(s) but got "
-                           + std::to_string(arguments.size()));
+        runtime("expected " + std::to_string(parameters.size()) + " argument(s) but got " + std::to_string(arguments.size()));
     ScriptScope scope(engine);
     for (int i = 0; i < arguments.size(); ++i) {
         auto&& parameter = parameters[i];
@@ -47,15 +46,15 @@ void Function::invoke(ScriptEngine *engine, const std::vector<Object> &arguments
             try {
                 engine->jumpTarget = JumpTarget::NONE;
                 engine->push(engine->yield.cast(returnType));
-            } catch (PlainRuntimeError& pre) {
-                pre.rethrow(engine->jumpFrom);
+            } catch (RawError& re) {
+                re.rethrow(engine->jumpFrom);
             }
         case JumpTarget::THROW:
             return;
         case JumpTarget::BREAK:
-            throw PlainRuntimeError("Wild break jump" + engine->jumpFrom.at());
+            runtime("Wild break jump", engine->jumpFrom);
         case JumpTarget::CONTINUE:
-            throw PlainRuntimeError("Wild continue jump" + engine->jumpFrom.at());
+            runtime("Wild continue jump", engine->jumpFrom);
     }
 }
 
@@ -86,15 +85,15 @@ void List::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) co
         mismatch: ;
     }
     if (candidates.empty())
-        throw PlainRuntimeError("no function is matched in the set of overloads");
+        runtime("no function is matched in the set of overloads");
     if (candidates.size() > 1)
-        throw PlainRuntimeError("multiple functions are matched in the set of overloads");
+        runtime("multiple functions are matched in the set of overloads");
     candidates.front()->invoke(engine, arguments);
 }
 
 void Object::invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const {
     std::visit(overloaded {
-        [] (auto x) { throw PlainRuntimeError("not invocable"); },
+        [] (auto x) { runtime("not invocable"); },
         [&] (func_t const& func) { func->invoke(engine, arguments); },
         [&] (list_t const& func) { func->invoke(engine, arguments); }
     }, object);
@@ -123,7 +122,7 @@ std::string List::toString() const {
     for (auto&& obj : objs) {
         if (first) { first = false; } else { ret += ", "; }
         if (obj.type() == Type::LIST && get<list_t>(obj.object)->mark)
-            throw PlainRuntimeError("[List::toString]: fatal recursive list");
+            runtime("recursive list cannot be serialized");
         ret += obj.toString();
     }
     return ret + "]";

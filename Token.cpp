@@ -1,11 +1,10 @@
 #include "Token.hpp"
-#include "Keyword.hpp"
 #include "Operator.hpp"
 #include "Unicode.hpp"
 
 namespace SauScript {
 
-std::string SourceLocation::at() const {
+std::string SourceLocation::what() const {
     if (code == nullptr) return " at unknown source";
     return " at line " + std::to_string(line) + '\n' + code->lines[line - 1] + '\n' + std::string(column - 1, '~') + '^';
 }
@@ -51,9 +50,9 @@ bool h(char ch) { return ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f' || ch 
 
 using predicate = bool (*) (char);
 void scan(const char*& current, predicate p) {
-    if (current[0] == '_') throw PlainRuntimeError("invalid underscore in number literal");
+    if (current[0] == '_') runtime("invalid underscore in number literal");
     while (*current == '_' || p(*current)) ++current;
-    if (current[-1] == '_') throw PlainRuntimeError("invalid underscore in number literal");
+    if (current[-1] == '_') runtime("invalid underscore in number literal");
 }
 
 Token SourceCode::parseNumber() {
@@ -75,7 +74,7 @@ Token SourceCode::parseNumber() {
         auto dot = ++current;
         scan(current, p);
         if (current == dot)
-            throw SyntaxError("use suffix '.0' to hint number's type to avoid ambiguity with dot operator" + at());
+            syntax("use suffix '.0' to hint number's type to avoid ambiguity with dot operator", location());
     }
     if (base == 10 && (*current == 'e' || *current == 'E')
         || base == 16 && (*current == 'p' || *current == 'P')) {
@@ -85,10 +84,10 @@ Token SourceCode::parseNumber() {
         scan(current, p);
     }
     if (real && (base == 2 || base == 8))
-        throw SyntaxError("binary or octal real literal" + at());
+        syntax("binary or octal real literal is unsupported", location());
     if (*start == '0' && (real ? start[1] != '.' : start + 1 != current))
-        throw SyntaxError("redundant 0 is forbidden to avoid ambiguity, use 0o if octal" + at());
-    if (isalnum(*current)) throw SyntaxError("invalid suffix of number" + at());
+        syntax("redundant 0 is forbidden to avoid ambiguity, use 0o if octal", location());
+    if (isalnum(*current)) syntax("invalid suffix of number", location());
     std::string number{start, current};
     erase(number, '_');
     try {
@@ -96,7 +95,7 @@ Token SourceCode::parseNumber() {
             ? Token::literal_real(std::stod((base == 10 ? "" : "0x") + number))
             : Token::literal_int(int_t(std::stoull(number, nullptr, base)));
     } catch (std::out_of_range&) {
-        throw SyntaxError("number literal overflow" + at());
+        syntax("number literal overflow", location());
     }
 }
 
@@ -116,12 +115,24 @@ Token SourceCode::parseIdentifier() {
         return Token::literal_real(0.0 / 0.0);
     } else if (token == "inf") {
         return Token::literal_real(1.0 / 0.0);
-    } else if (auto kw = Keyword::parse(token); kw != Keyword::NAK) {
-        return Token::keyword(kw);
+    } else if (KEYWORDS.contains(token)) {
+        return Token::keyword(KEYWORDS[token]);
     } else if (auto &&ops = Operators::tokens(); std::find(ops.begin(), ops.end(), token) != ops.end()) {
         return Token::punctuator(token);
     } else {
         return Token::identifier(token);
+    }
+}
+
+Token parseBrace(char ch) {
+    switch (ch) {
+        case '(': return Token::parenLeft();
+        case ')': return Token::parenRight();
+        case '[': return Token::bracketLeft();
+        case ']': return Token::bracketRight();
+        case '{': return Token::braceLeft();
+        case '}': return Token::braceRight();
+        default:  return Token::terminator();
     }
 }
 
@@ -131,43 +142,19 @@ void SourceCode::tokenize() {
         if (ch == '\\') {
             ++current;
             if (skipLineBreak(true)) continue;
-            throw SyntaxError("stray '\\'" + at());
+            syntax("stray '\\'", location());
         } else if (skipLineBreak(false)) {
             tokens.push_back(Token::linebreak().at(old));
         } else if (std::isspace(ch)) {
             ++current;
         } else {
-            switch (ch) {
-                case '(':
-                    tokens.push_back(Token::parenLeft().at(location()));
-                    ++current;
-                    continue;
-                case ')':
-                    tokens.push_back(Token::parenRight().at(location()));
-                    ++current;
-                    continue;
-                case '[':
-                    tokens.push_back(Token::bracketLeft().at(location()));
-                    ++current;
-                    continue;
-                case ']':
-                    tokens.push_back(Token::bracketRight().at(location()));
-                    ++current;
-                    continue;
-                case '{':
-                    tokens.push_back(Token::braceLeft().at(location()));
-                    ++current;
-                    continue;
-                case '}':
-                    tokens.push_back(Token::braceRight().at(location()));
-                    ++current;
-                    continue;
-                case '\'':
-                    tokens.push_back(Token::literal_int(Unicode::unquoteCharacter(current)).at(location()));
-                    ++current;
-                    continue;
-            }
-            if (isIdentifierStart(ch)) {
+            if (Token brace = parseBrace(ch); brace.type == TokenType::BRACE) {
+                tokens.push_back(brace);
+                ++current;
+            } else if (ch == '\'') {
+                tokens.push_back(Token::literal_int(Unicode::unquoteCharacter(current)).at(location()));
+                ++current;
+            } else if (isIdentifierStart(ch)) {
                 tokens.push_back(parseIdentifier().at(old));
             } else if (isNumberStart(ch)) {
                 tokens.push_back(parseNumber().at(old));
@@ -182,12 +169,12 @@ void SourceCode::tokenize() {
                     tokens.push_back(Token::punctuator(token).at(location()));
                     current += token.length();
                 } else {
-                    throw SyntaxError("unexpected token" + at());
+                    syntax("unexpected token", location());
                 }
             }
         }
-    } catch(PlainRuntimeError& pre) {
-        throw SyntaxError(pre.what() + at());
+    } catch(RawError& re) {
+        re.rethrowAsSyntaxError(location());
     }
     tokens.push_back(Token::linebreak().at(location()));
     tokens.push_back(Token::terminator().at(location()));

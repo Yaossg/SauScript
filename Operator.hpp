@@ -6,21 +6,6 @@
 
 namespace SauScript::Operators {
 
-// 0 io, parameterized jump, assignment, ternary
-// 1 logical or
-// 2 logical and
-// 3 bit or
-// 4 bit xor
-// 5 bit and
-// 6 equality
-// 7 inequality
-// 8 shift
-// 9 addition
-// 10 multiplication
-// 11 prefix
-// 12 postfix
-// 13 primary expression
-
 constexpr int LEVEL_ROOT = 0;
 constexpr int LEVEL_PREFIX = 12;
 constexpr int LEVEL_POSTFIX = 13;

@@ -3,11 +3,11 @@
 namespace SauScript::Unicode {
 
 [[noreturn]] void malformed() {
-    throw PlainRuntimeError("Malformed hexadecimal unicode");
+    runtime("Malformed hexadecimal unicode");
 }
 
 [[noreturn]] void illegal() {
-    throw PlainRuntimeError("Illegal unicode value");
+    runtime("Illegal unicode value");
 }
 
 [[nodiscard]] bool isSurrogate(char32_t ch) {
@@ -18,7 +18,7 @@ char32_t hex(char ch) {
     if ('0' <= ch && ch <= '9') return ch - '0';
     if ('a' <= ch && ch <= 'f') return ch - 'a' + 10;
     if ('A' <= ch && ch <= 'F') return ch - 'A' + 10;
-    throw RuntimeError("Assertion failed");
+    impossible();
 }
 
 char parseHexASCII(const char*& current) {
@@ -48,6 +48,7 @@ char32_t parseHexUnicode(const char*& current) {
 }
 
 std::string encodeUnicode(char32_t unicode) {
+    if (isSurrogate(unicode)) illegal();
     if (unicode <= 0x7F) { // ASCII
         return {char(unicode)};
     } else if (unicode <= 0x7FF) { // 2 bytes

@@ -20,6 +20,29 @@ inline std::string_view nameOf(Type type) {
     return TYPE_NAMES[(size_t) type];
 }
 
+struct Parameter {
+    Type type;
+    std::string name;
+
+    [[nodiscard]] std::string type_name() const {
+        return std::string(nameOf(type));
+    }
+
+    [[nodiscard]] std::string toString() const {
+        return name + ": " + type_name();
+    }
+};
+
+struct Function {
+    Type returnType;
+    std::vector<Parameter> parameters;
+    std::unique_ptr<ExprNode> expr;
+
+    [[nodiscard]] std::string descriptor() const;
+    [[nodiscard]] std::string toString() const;
+    void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
+};
+
 struct List {
     std::vector<Object> objs;
     mutable bool mark = false;
@@ -56,40 +79,7 @@ constexpr Type parseType() {
         return Type::LIST;
     } else if constexpr(std::is_same_v<T, Object>) {
         return Type::ANY;
-    } else throw SyntaxError("unsupported external type");
-}
-
-struct Parameter {
-    Type type;
-    std::string name;
-
-    [[nodiscard]] std::string type_name() const {
-        return std::string(nameOf(type));
     }
-
-    [[nodiscard]] std::string toString() const {
-        return name + ": " + type_name();
-    }
-};
-
-struct Function {
-    Type returnType;
-    std::vector<Parameter> parameters;
-    std::unique_ptr<ExprNode> expr;
-
-    [[nodiscard]] std::string descriptor() const;
-    [[nodiscard]] std::string toString() const;
-    void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
-};
-
-template<size_t I>
-std::string externalParameterName() {
-    return "$" + std::to_string(I);
-}
-
-template<typename... Args, size_t... I>
-std::vector<Parameter> externalParameters(std::index_sequence<I...>) {
-    return {{parseType<Args>(), externalParameterName<I>()}...};
 }
 
 struct Object {
@@ -106,13 +96,13 @@ struct Object {
     [[nodiscard]] bool asBool() const {
         if (type() == Type::INT)
             return std::get<int_t>(object) != 0;
-        throw PlainRuntimeError("expected int as bool but got " + type_name());
+        runtime("expected int as bool but got " + type_name());
     }
 
     [[nodiscard]] int_t& asInt() {
         if (type() == Type::INT)
             return std::get<int_t>(object);
-        throw PlainRuntimeError("expected int but got " + type_name());
+        runtime("expected int but got " + type_name());
     }
 
     [[nodiscard]] std::variant<int_t*, real_t*> asNumber() {
@@ -120,20 +110,20 @@ struct Object {
             case Type::INT: return &std::get<int_t>(object);
             case Type::REAL: return &std::get<real_t>(object);
         }
-        throw PlainRuntimeError("expected number but got " + type_name());
+        runtime("expected number but got " + type_name());
     }
 
     [[nodiscard]] Object cast(Type type) const {
         if (type == Type::VOID) return {};
         if (type == Type::ANY || this->type() == type) return *this;
         if (this->type() == Type::INT && type == Type::REAL) return {(real_t)std::get<int_t>(object)};
-        throw PlainRuntimeError("attempt to implicitly cast from " + type_name() + " to " + std::string(nameOf(type)));
+        runtime("attempt to implicitly cast from " + type_name() + " to " + std::string(nameOf(type)));
     }
 
     void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 
     [[nodiscard]] list_t iterable() const {
-        if (type() != Type::LIST) throw PlainRuntimeError("not iterable");
+        if (type() != Type::LIST) runtime("not iterable");
         return std::get<list_t>(object);
     }
 
@@ -167,7 +157,7 @@ struct Object {
 
     bool operator<(Object const& other) const {
         return std::visit(overloaded {
-            [] (auto a, auto b) -> bool { throw PlainRuntimeError("not comparable"); },
+            [] (auto a, auto b) -> bool { runtime("not comparable"); },
             [] (std::monostate, std::monostate) { return false; },
             [] (int_t a, int_t b) { return a < b; },
             [] (real_t a, real_t b) { return a < b; },
@@ -205,7 +195,7 @@ struct Operand {
     [[nodiscard]] Object* ref() const {
         if (std::holds_alternative<Object*>(val_or_ref))
             return std::get<Object*>(val_or_ref);
-        throw PlainRuntimeError("rvalue cannot be used as lvalue");
+        runtime("rvalue cannot be used as lvalue");
     }
 };
 }

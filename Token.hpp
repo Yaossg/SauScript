@@ -1,6 +1,7 @@
 #pragma once
 
 #include "TypeSystem.hpp"
+#include "Keyword.hpp"
 
 namespace SauScript {
 
@@ -24,11 +25,8 @@ struct Token {
         location = where;
         return *this;
     }
-    [[nodiscard]] std::string at() const {
-        return location.at();
-    }
-    [[nodiscard]] int keyword() const {
-        return std::get<int>(parameter);
+    [[nodiscard]] Keyword keyword() const {
+        return Keyword(std::get<int>(parameter));
     }
     [[nodiscard]] std::string identifier() const {
         return std::get<std::string>(parameter);
@@ -46,12 +44,12 @@ struct Token {
         return std::get<real_t>(parameter);
     }
     [[nodiscard]] Type parseType() const {
-        if (type != TokenType::IDENTIFIER) throw SyntaxError("expected type name" + at());
+        if (type != TokenType::IDENTIFIER) syntax("expected type name", location);
         std::string name = identifier();
         auto first = std::begin(TYPE_NAMES), last = std::end(TYPE_NAMES);
         Type type = Type(std::find(first, last, name) - first);
         if (type == Type::NAT)
-            throw SyntaxError("invalid type name" + at());
+            syntax("invalid type name", location);
         return type;
     }
 
@@ -70,8 +68,8 @@ struct Token {
     static Token literal_real(real_t x) {
         return {TokenType::LITERAL_REAL, x};
     }
-    static Token keyword(int keyword) {
-        return {TokenType::KEYWORD, keyword};
+    static Token keyword(Keyword keyword) {
+        return {TokenType::KEYWORD, int(keyword)};
     }
     static Token braceLeft() {
         return {TokenType::BRACE, 0};
@@ -115,10 +113,6 @@ private:
 
     [[nodiscard]] SourceLocation location() const {
         return {this, line, column()};
-    }
-
-    [[nodiscard]] std::string at() const {
-        return location().at();
     }
 
     void tokenize();

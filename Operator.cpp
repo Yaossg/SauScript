@@ -7,11 +7,11 @@ using Assertion = void(int_t);
 void noop_assert(int_t) {}
 
 void division_assert(int_t b) {
-    if (b == 0) throw PlainRuntimeError("divided by zero");
+    if (b == 0) runtime("divided by zero");
 }
 
 void shift_assert(int_t b) {
-    if (b < 0) throw PlainRuntimeError("negative shift count");
+    if (b < 0) runtime("negative shift count");
 }
 
 int_t ushr(int_t lhs, int_t rhs) {
@@ -24,7 +24,7 @@ auto unary(Fn fn) {
         auto* engine = node->engine;
         node->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
-        fn(engine, node->location);
+        fn(engine);
     };
 }
 
@@ -118,19 +118,19 @@ auto intAssignment(Fn fn, Assertion* an = noop_assert) {
     };
 }
 
-const std::vector<Operator> OPERATORS[14] = {
+const std::vector<Operator> OPERATORS[14] {
         {
-                {"throw", unary([] (ScriptEngine* engine, SourceLocation location) {
-                    engine->jump(JumpTarget::THROW, location, engine->pop().val());
+                {"throw", unary([] (ScriptEngine* engine) {
+                    engine->jump(JumpTarget::THROW, engine->pop().val());
                 })},
-                {"break", unary([] (ScriptEngine* engine, SourceLocation location) {
-                    engine->jump(JumpTarget::BREAK, location, engine->pop().val());
+                {"break", unary([] (ScriptEngine* engine) {
+                    engine->jump(JumpTarget::BREAK, engine->pop().val());
                 })},
-                {"continue", unary([] (ScriptEngine* engine, SourceLocation location) {
-                    engine->jump(JumpTarget::CONTINUE, location, engine->pop().val());
+                {"continue", unary([] (ScriptEngine* engine) {
+                    engine->jump(JumpTarget::CONTINUE, engine->pop().val());
                 })},
-                {"return", unary([] (ScriptEngine* engine, SourceLocation location) {
-                    engine->jump(JumpTarget::RETURN, location, engine->pop().val());
+                {"return", unary([] (ScriptEngine* engine) {
+                    engine->jump(JumpTarget::RETURN, engine->pop().val());
                 })},
                 {":=", [](ExprNode* lhs, ExprNode* rhs) {
                     auto* engine = rhs->engine;
@@ -139,9 +139,9 @@ const std::vector<Operator> OPERATORS[14] = {
                     if (auto* ref = dynamic_cast<RefNode*>(lhs))
                         ref->initialize();
                     else
-                        throw RuntimeError("initialization must be directly applied to id-expression" + lhs->location.at());
+                        runtime("initialization must be directly applied to id-expression", lhs->location);
                 }},
-                {"=",  assignment([](Object* lhs, Object rhs) {
+                {"=",  assignment([](Object* lhs, Object const& rhs) {
                     *lhs = rhs.cast(lhs->type());
                 })},
                 {"+=", simpleAssignment([](auto* lhs, auto* rhs) { *lhs += *rhs; })},
@@ -218,32 +218,32 @@ const std::vector<Operator> OPERATORS[14] = {
                 {"%", intBinary(std::modulus<int_t>{}, division_assert)}
         },
         {
-                {"++", unary([](ScriptEngine* engine, SourceLocation location) {
+                {"++", unary([](ScriptEngine* engine) {
                     auto a = engine->pop();
                     ++a.ref()->asInt();
                     engine->push(a);
                 })},
-                {"--", unary([](ScriptEngine* engine, SourceLocation location) {
+                {"--", unary([](ScriptEngine* engine) {
                     auto a = engine->pop();
                     --a.ref()->asInt();
                     engine->push(a);
                 })},
-                {"+", unary([](ScriptEngine*, SourceLocation){})},
-                {"-", unary([](ScriptEngine* engine, SourceLocation location) {
+                {"+", unary([](ScriptEngine*){})},
+                {"-", unary([](ScriptEngine* engine) {
                     engine->push(std::visit([](auto* a) { return Object{-*a}; }, engine->pop().val().asNumber()));
                 })},
-                {"!", unary([](ScriptEngine* engine, SourceLocation location) {
+                {"!", unary([](ScriptEngine* engine) {
                     engine->push(Object{!engine->pop().val().asBool()});
                 })},
-                {"~", unary([](ScriptEngine* engine, SourceLocation location) {
+                {"~", unary([](ScriptEngine* engine) {
                     engine->push(Object{~engine->top().val().asInt()});
                 })}
         },
         {
-                {"++", unary([](ScriptEngine* engine, SourceLocation location) {
+                {"++", unary([](ScriptEngine* engine) {
                     engine->push(Object{engine->pop().ref()->asInt()++});
                 })},
-                {"--", unary([](ScriptEngine* engine, SourceLocation location) {
+                {"--", unary([](ScriptEngine* engine) {
                     engine->push(Object{engine->pop().ref()->asInt()--});
                 })}
         }

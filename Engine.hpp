@@ -29,9 +29,8 @@ struct ScriptEngine {
 
     std::vector<std::unique_ptr<SourceCode>> compiled;
 
-    void jump(JumpTarget jumpTarget, SourceLocation jumpFrom, Object yield) {
+    void jump(JumpTarget jumpTarget, Object yield) {
         this->jumpTarget = jumpTarget;
-        this->jumpFrom = jumpFrom;
         this->yield = std::move(yield);
     }
 
@@ -54,15 +53,16 @@ struct ScriptEngine {
     Operand findOperand(std::string const &name);
 
     [[nodiscard]] std::unique_ptr<ExprNode> compileExpression(Token *&current, int level);
+    [[nodiscard]] std::vector<std::unique_ptr<ExprNode>> compileExpressions(Token *&current, Token const& stop, std::unique_ptr<ExprNode> init = nullptr);
     [[nodiscard]] std::unique_ptr<ExprNode> compileWhile(Token *&current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileFor(Token *&current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileIfElse(Token *&current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileTryCatch(Token *&current);
     [[nodiscard]] std::unique_ptr<ExprNode> compileFunction(Token *&current);
     [[nodiscard]] std::unique_ptr<StmtsNode> compileStatements(Token *&current);
-    [[nodiscard]] std::unique_ptr<StmtsNode> compile(std::string script);
+    [[nodiscard]] std::unique_ptr<StmtsNode> compile(std::string const& script);
 
-    void exec(std::string script, FILE *err = stderr);
+    void exec(std::string const& script, FILE *err = stderr);
 };
 
 struct ScriptScope {
@@ -93,7 +93,7 @@ void ScriptEngine::installExternalFunction(const std::string &name, Fn fn) {
                 get<list_t>(global()[name].object)->objs.push_back(wrapped);
                 break;
             default:
-                throw RuntimeError("Assertion failed");
+                runtime("Assertion failed");
         }
     }
 }
