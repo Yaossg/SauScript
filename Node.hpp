@@ -170,11 +170,11 @@ struct OpIndexNode : ExprNode {
         index->push();
         if (engine->jumpTarget != JumpTarget::NONE) return;
         auto b = engine->pop().val().asInt();
-        if (b < 0 || b >= a->objs.size()) runtime("list index access out of bound", location);
-        if (t.val_or_ref.index())
-            engine->push(&a->objs.at(b));
+        if (b < 0 || b >= a->elements.size()) runtime("list index access out of bound", location);
+        if (t.val_or_ref.index() && !a->mutLock)
+            engine->push(&a->mut().at(b));
         else
-            engine->push(a->objs.at(b));
+            engine->push(a->elements.at(b));
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
@@ -430,7 +430,9 @@ struct ForEachNode : ExprNode {
         std::vector<Object> yield;
         iter->push();
         if (engine->jumpTarget == JumpTarget::NONE) {
-            for (auto list = engine->pop().val().iterable(); auto&& obj : list->objs) {
+            auto iterable = engine->pop().val().asIterable();
+            List::MutLockGuard guard(iterable.get());
+            for (auto&& obj : iterable->elements) {
                 engine->local()[name] = obj;
                 loop->push();
                 if (engine->jumpTarget == JumpTarget::NONE)

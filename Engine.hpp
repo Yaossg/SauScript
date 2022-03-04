@@ -86,11 +86,12 @@ void ScriptEngine::installExternalFunction(const std::string &name, Fn fn) {
         global()[name] = wrapped;
     } else {
         switch (global()[name].type()) {
-            case Type::FUNC:
-                global()[name] = {std::make_shared<List>(List{global()[name], wrapped})};
-                break;
+            case Type::FUNC: {
+                std::vector<Object> overloads{global()[name], wrapped};
+                global()[name] = {std::make_shared<List>(std::move(overloads))};
+            } break;
             case Type::LIST:
-                get<list_t>(global()[name].object)->objs.push_back(wrapped);
+                get<list_t>(global()[name].object)->mut().push_back(wrapped);
                 break;
             default:
                 runtime("Assertion failed");

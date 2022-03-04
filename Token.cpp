@@ -149,7 +149,7 @@ void SourceCode::tokenize() {
             ++current;
         } else {
             if (Token brace = parseBrace(ch); brace.type == TokenType::BRACE) {
-                tokens.push_back(brace);
+                tokens.push_back(brace.at(location()));
                 ++current;
             } else if (ch == '\'') {
                 tokens.push_back(Token::literal_int(Unicode::unquoteCharacter(current)).at(location()));

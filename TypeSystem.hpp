@@ -3,18 +3,27 @@
 #include <vector>
 #include <memory>
 #include <variant>
+#include <map>
 
 #include "Lib.hpp"
 
 namespace SauScript {
 
-static std::string_view TYPE_NAMES[] = {"void", "int", "real", "func", "list", "any"};
-
-enum class Type : size_t {
+enum class Type {
     VOID, INT, REAL, FUNC, LIST,
-    ANY, // as parameter or return type
-    NAT  // not a type
+    ANY // as parameter or return type
 };
+
+inline std::map<std::string, Type> TYPES{
+        {"void",    Type::VOID  },
+        {"int",     Type::INT   },
+        {"real",    Type::REAL  },
+        {"func",    Type::FUNC  },
+        {"list",    Type::LIST  },
+        {"any",     Type::ANY   }
+};
+
+static std::string_view TYPE_NAMES[] = {"void", "int", "real", "func", "list", "any"};
 
 inline std::string_view nameOf(Type type) {
     return TYPE_NAMES[(size_t) type];
@@ -41,23 +50,31 @@ struct Function {
     [[nodiscard]] std::string descriptor() const;
     [[nodiscard]] std::string toString() const;
     void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
+    Object invokeExternally(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 };
 
 struct List {
-    std::vector<Object> objs;
-    mutable bool mark = false;
-    List() = default;
-    List(std::vector<Object> objs): objs(std::move(objs)) {}
-    List(std::initializer_list<Object> objs): objs(objs) {}
-    struct Guard {
-        List const* list;
-        explicit Guard(List const* list): list(list) { list->mark = true; }
-        ~Guard() { list->mark = false; }
+    const std::vector<Object> elements;
+    explicit List(std::vector<Object> elements): elements(std::move(elements)) {}
+
+    mutable bool mutLock = false;
+    struct MutLockGuard {
+        List const* owner;
+        explicit MutLockGuard(List const* owner): owner(owner) { owner->mutLock = true; }
+        ~MutLockGuard() { owner->mutLock = false; }
     };
-
-    void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
-
+    std::vector<Object>& mut() {
+        if (mutLock) runtime("attempt to modify a list locked in mutability");
+        return const_cast<std::vector<Object>&>(elements);
+    }
+    mutable bool toStringLock = false;
+    struct ToStringLockGuard {
+        List const* owner;
+        explicit ToStringLockGuard(List const* owner): owner(owner) { owner->toStringLock = true; }
+        ~ToStringLockGuard() { owner->toStringLock = false; }
+    };
     [[nodiscard]] std::string toString() const;
+    void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 };
 
 using int_t = long long;
@@ -122,7 +139,7 @@ struct Object {
 
     void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 
-    [[nodiscard]] list_t iterable() const {
+    [[nodiscard]] list_t asIterable() const {
         if (type() != Type::LIST) runtime("not iterable");
         return std::get<list_t>(object);
     }
@@ -151,7 +168,7 @@ struct Object {
             [] (int_t a, real_t b) { return a == b; },
             [] (real_t a, int_t b) { return a == b; },
             [] (func_t const& a, func_t const& b) { return a.get() == b.get(); },
-            [] (list_t const& a, list_t const& b) { return std::equal(a->objs.begin(), a->objs.end(), b->objs.begin(), b->objs.end()); },
+            [] (list_t const& a, list_t const& b) { return std::equal(a->elements.begin(), a->elements.end(), b->elements.begin(), b->elements.end()); },
         }, object, other.object);
     }
 
@@ -163,7 +180,7 @@ struct Object {
             [] (real_t a, real_t b) { return a < b; },
             [] (int_t a, real_t b) { return a < b; },
             [] (real_t a, int_t b) { return a < b; },
-            [] (list_t const& a, list_t const& b) { return std::lexicographical_compare(a->objs.begin(), a->objs.end(), b->objs.begin(), b->objs.end()); },
+            [] (list_t const& a, list_t const& b) { return std::lexicographical_compare(a->elements.begin(), a->elements.end(), b->elements.begin(), b->elements.end()); },
         }, object, other.object);
     }
 

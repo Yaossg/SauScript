@@ -49,80 +49,96 @@ void installEnvironment(ScriptEngine* engine) {
         return x;
     });
 
-    engine->installExternalFunction("copy",     [](list_t list) { return std::make_shared<List>(list->objs); });
-    engine->installExternalFunction("empty",    [](list_t list) { return (int_t)list->objs.empty(); });
-    engine->installExternalFunction("size",     [](list_t list) { return (int_t)list->objs.size(); });
-    engine->installExternalFunction("push",     [](list_t list, Object obj) { list->objs.push_back(obj); });
-    engine->installExternalFunction("pop",      [](list_t list) { list->objs.pop_back(); });
-    engine->installExternalFunction("front",    [](list_t list) { return list->objs.front(); });
-    engine->installExternalFunction("back",     [](list_t list) { return list->objs.back(); });
-    engine->installExternalFunction("clear",    [](list_t list) { list->objs.clear(); });
-    engine->installExternalFunction("addAll",   [](list_t list, list_t objs) {
-        if (list.get() == objs.get()) {
-            size_t sz = list->objs.size();
-            for (size_t i = 0; i < sz; ++i) list->objs.push_back(list->objs.at(i));
-        } else for (auto&& obj : objs->objs) list->objs.push_back(obj);
+    engine->installExternalFunction("copy",     [](list_t list) { return std::make_shared<List>(list->elements); });
+    engine->installExternalFunction("empty",    [](list_t list) { return (int_t)list->elements.empty(); });
+    engine->installExternalFunction("size",     [](list_t list) { return (int_t)list->elements.size(); });
+    engine->installExternalFunction("push",     [](list_t list, Object obj) { list->mut().push_back(obj); });
+    engine->installExternalFunction("pop",      [](list_t list) { list->mut().pop_back(); });
+    engine->installExternalFunction("front",    [](list_t list) { return list->elements.front(); });
+    engine->installExternalFunction("back",     [](list_t list) { return list->elements.back(); });
+    engine->installExternalFunction("clear",    [](list_t list) { list->mut().clear(); });
+    engine->installExternalFunction("concat",   [](list_t list1, list_t list2) {
+        std::vector<Object> result;
+        for (auto&& obj : list1->elements) {
+            result.push_back(obj);
+        }
+        for (auto&& obj : list2->elements) {
+            result.push_back(obj);
+        }
+        return std::make_shared<List>(std::move(result));
+    });
+    engine->installExternalFunction("flat",   [](list_t list) {
+        std::vector<Object> result;
+        for (auto&& obj : list->elements) {
+            for (auto iterable = obj.asIterable(); auto&& obj : iterable->elements) {
+                result.push_back(obj);
+            }
+        }
+        return std::make_shared<List>(std::move(result));
     });
     engine->installExternalFunction("insert",   [](list_t list, int_t index, Object obj) {
-        if (index < 0 || index > list->objs.size()) runtime("index out of bound");
-        list->objs.insert(list->objs.begin() + index, obj);
+        if (index < 0 || index > list->elements.size()) runtime("index out of bound");
+        list->mut().insert(list->elements.begin() + index, obj);
     });
     engine->installExternalFunction("removeAt", [](list_t list, int_t index) {
-        if (index < 0 || index >= list->objs.size()) runtime("index out of bound");
-        list->objs.erase(list->objs.begin() + index);
+        if (index < 0 || index >= list->elements.size()) runtime("index out of bound");
+        list->mut().erase(list->elements.begin() + index);
     });
     engine->installExternalFunction("remove",   [](list_t list, Object obj) {
-        erase(list->objs, obj);
+        erase(list->mut(), obj);
     });
-    engine->installExternalFunction("indexOf",  [](list_t list, Object obj) {
-        int_t index = std::find(list->objs.begin(), list->objs.end(), obj) - list->objs.begin();
-        return list->objs.size() == index ? -1 : index;
+    engine->installExternalFunction("find",     [](list_t list, Object obj) {
+        int_t index = std::find(list->elements.begin(), list->elements.end(), obj) - list->elements.begin();
+        return list->elements.size() == index ? -1 : index;
     });
-    engine->installExternalFunction("lastIndexOf",[](list_t list, Object obj) {
-        int_t index = list->objs.size() - (std::find(list->objs.rbegin(), list->objs.rend(), obj) - list->objs.rbegin()) - 1;
-        return list->objs.size() == index ? -1 : index;
+    engine->installExternalFunction("find_if",  [engine](list_t list, func_t predicate) {
+        int_t index = std::find_if(list->elements.begin(), list->elements.end(), [engine, &predicate](Object const& a) {
+            return predicate->invokeExternally(engine, {a}).asBool();
+        }) - list->elements.begin();
+        return list->elements.size() == index ? -1 : index;
     });
-    engine->installExternalFunction("reverse",  [](list_t list) { std::reverse(list->objs.begin(), list->objs.end()); });
+    engine->installExternalFunction("reverse",  [](list_t list) { std::reverse(list->mut().begin(), list->mut().end()); });
     engine->installExternalFunction("sort",     [engine](list_t list, func_t comparator) {
-        std::sort(list->objs.begin(), list->objs.end(), [engine, &comparator](Object const& a, Object const& b) {
-            comparator->invoke(engine, {a, b});
-            if (engine->jumpTarget != JumpTarget::NONE) runtime("external function callback do not process internal jump");
-            return engine->pop().val().asBool();
+        std::sort(list->mut().begin(), list->mut().end(), [engine, &comparator](Object const& a, Object const& b) {
+            return comparator->invokeExternally(engine, {a, b}).asBool();
         });
     });
-    engine->installExternalFunction("generate", [engine](int_t size, func_t generator) {
+    engine->installExternalFunction("iota",     [](int_t size) {
         std::vector<Object> result;
         for (int_t i = 0; i < size; ++i) {
-            generator->invoke(engine, {{i}});
-            if (engine->jumpTarget != JumpTarget::NONE) runtime("external function callback do not process internal jump");
-            result.push_back(engine->pop().val());
+            result.push_back({i});
         }
-        return std::make_shared<List>(result);
+        return std::make_shared<List>(std::move(result));
     });
     engine->installExternalFunction("map",      [engine](list_t list, func_t mapper) {
         std::vector<Object> result;
-        for (auto&& obj : list->objs) {
-            mapper->invoke(engine, {obj});
-            if (engine->jumpTarget != JumpTarget::NONE) runtime("external function callback do not process internal jump");
-            result.push_back(engine->pop().val());
+        for (auto&& obj : list->elements) {
+            result.push_back(mapper->invokeExternally(engine, {obj}));
         }
-        return std::make_shared<List>(result);
+        return std::make_shared<List>(std::move(result));
     });
     engine->installExternalFunction("filter",   [engine](list_t list, func_t filter) {
         std::vector<Object> result;
-        for (auto&& obj : list->objs) {
-            filter->invoke(engine, {obj});
-            if (engine->jumpTarget != JumpTarget::NONE) runtime("external function callback do not process internal jump");
-            if (engine->pop().val().asBool())
+        for (auto&& obj : list->elements) {
+            if (filter->invokeExternally(engine, {obj}).asBool())
                 result.push_back(obj);
         }
-        return std::make_shared<List>(result);
+        return std::make_shared<List>(std::move(result));
     });
-    engine->installExternalFunction("reduce",   [engine](list_t list, Object init, func_t folder) {
-        for (auto&& obj : list->objs) {
-            folder->invoke(engine, {init, obj});
-            if (engine->jumpTarget != JumpTarget::NONE) runtime("external function callback do not process internal jump");
-            init = engine->pop().val();
+    engine->installExternalFunction("reduce",   [engine](list_t list, func_t acc) {
+        if (list->elements.empty()) runtime("empty list cannot be reduced without init");
+        Object init = list->elements[0];
+        bool first = true;
+        for (auto&& obj : list->elements) {
+            if (first) { first = false; } else {
+                init = acc->invokeExternally(engine, {init, obj});
+            }
+        }
+        return init;
+    });
+    engine->installExternalFunction("reduce",   [engine](list_t list, Object init, func_t acc) {
+        for (auto&& obj : list->elements) {
+            init = acc->invokeExternally(engine, {init, obj});
         }
         return init;
     });

@@ -27,7 +27,7 @@ void Function::invoke(ScriptEngine *engine, const std::vector<Object> &arguments
     if (parameters.size() != arguments.size())
         runtime("expected " + std::to_string(parameters.size()) + " argument(s) but got " + std::to_string(arguments.size()));
     ScriptScope scope(engine);
-    for (int i = 0; i < arguments.size(); ++i) {
+    for (size_t i = 0; i < arguments.size(); ++i) {
         auto&& parameter = parameters[i];
         auto&& argument = arguments[i];
         engine->local()[parameter.name] = argument.cast(parameter.type);
@@ -58,14 +58,20 @@ void Function::invoke(ScriptEngine *engine, const std::vector<Object> &arguments
     }
 }
 
+Object Function::invokeExternally(ScriptEngine *engine, const std::vector<Object> &arguments) const {
+    invoke(engine, arguments);
+    if (engine->jumpTarget != JumpTarget::NONE) runtime("internal throw in external callback is forbidden");
+    return engine->pop().val();
+}
+
 void List::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) const {
     std::vector<func_t> candidates;
-    int least_promoted = arguments.size();
-    for (auto&& obj : objs) {
+    size_t least_promoted = arguments.size();
+    for (auto&& obj : elements) {
         if (obj.type() != Type::FUNC) goto mismatch;
         if (func_t candidate = get<func_t>(obj.object); candidate->parameters.size() == arguments.size()) {
-            int promoted = 0;
-            for (int i = 0; i < arguments.size(); ++i) {
+            size_t promoted = 0;
+            for (size_t i = 0; i < arguments.size(); ++i) {
                 auto&& parameter = candidate->parameters[i];
                 auto&& argument = arguments[i];
                 if (parameter.type == Type::ANY || argument.type() == Type::INT && parameter.type == Type::REAL) {
@@ -116,12 +122,12 @@ std::string Object::toString() const {
 }
 
 std::string List::toString() const {
-    Guard guard(this);
+    ToStringLockGuard guard(this);
     bool first = true;
     std::string ret = "[";
-    for (auto&& obj : objs) {
+    for (auto&& obj : elements) {
         if (first) { first = false; } else { ret += ", "; }
-        if (obj.type() == Type::LIST && get<list_t>(obj.object)->mark)
+        if (obj.type() == Type::LIST && get<list_t>(obj.object)->toStringLock)
             runtime("recursive list cannot be serialized");
         ret += obj.toString();
     }

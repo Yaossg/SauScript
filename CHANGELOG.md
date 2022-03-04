@@ -181,3 +181,12 @@ typeid 函数
 允许表达式中部分多余的换行符
 
 generate 和 reduce 函数
+
+### v1.4-epsilon
+
+加入可变性锁，在 for-each 期间列表不可变
+
+addAll 被 concat 取代，generate 被 iota 取代，indexOf 被 find 取代
+
+删除 lastIndexOf 加入 flat、find_if、无 init 的 reduce
+

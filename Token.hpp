@@ -46,11 +46,9 @@ struct Token {
     [[nodiscard]] Type parseType() const {
         if (type != TokenType::IDENTIFIER) syntax("expected type name", location);
         std::string name = identifier();
-        auto first = std::begin(TYPE_NAMES), last = std::end(TYPE_NAMES);
-        Type type = Type(std::find(first, last, name) - first);
-        if (type == Type::NAT)
-            syntax("invalid type name", location);
-        return type;
+        if (TYPES.contains(name))
+            return TYPES[name];
+        syntax("invalid type name", location);
     }
 
     static Token punctuator(std::string p) {
