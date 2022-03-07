@@ -9,7 +9,7 @@ namespace SauScript {
 
 enum class TokenType {
     PUNCTUATOR, IDENTIFIER, KEYWORD, LINEBREAK,
-    LITERAL_BOOL, LITERAL_INT, LITERAL_REAL, BRACE,
+    LITERAL_BOOL, LITERAL_INT, LITERAL_REAL, LITERAL_STRING, BRACE,
 
     TERMINATOR
 };
@@ -43,6 +43,9 @@ struct Token {
     [[nodiscard]] real_t literal_real() const {
         return std::get<real_t>(parameter);
     }
+    [[nodiscard]] std::string literal_string() const {
+        return std::get<std::string>(parameter);
+    }
     [[nodiscard]] Type parseType() const {
         if (type != TokenType::IDENTIFIER) syntax("expected type name", location);
         std::string name = identifier();
@@ -65,6 +68,9 @@ struct Token {
     }
     static Token literal_real(real_t x) {
         return {TokenType::LITERAL_REAL, x};
+    }
+    static Token literal_string(std::string x) {
+        return {TokenType::LITERAL_STRING, x};
     }
     static Token keyword(Keyword keyword) {
         return {TokenType::KEYWORD, int(keyword)};
@@ -97,12 +103,14 @@ struct Token {
 
 // source code & tokenizer
 
-struct SourceCode {
+struct SourceCode : std::enable_shared_from_this<SourceCode> {
+    // initialized once constructed
     std::string raw;
     std::vector<std::string> lines;
-    std::vector<Token> tokens;
-
     explicit SourceCode(std::string raw);
+    // initialized only when tokenized
+    std::vector<Token> tokens;
+    void tokenize();
 
 private:
     [[nodiscard]] int column() const {
@@ -110,12 +118,9 @@ private:
     }
 
     [[nodiscard]] SourceLocation location() const {
-        return {this, line, column()};
+        return {shared_from_this(), line, column()};
     }
 
-    void tokenize();
-
-private:
     const char* current;
     const char* start;
     int line;

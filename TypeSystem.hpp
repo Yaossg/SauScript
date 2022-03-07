@@ -5,12 +5,18 @@
 #include <variant>
 #include <map>
 
-#include "Lib.hpp"
+#include "Diagnostics.hpp"
 
 namespace SauScript {
 
+template<typename... Ts>
+struct overloaded : Ts... {
+    explicit overloaded(Ts... ts): Ts(ts)... {}
+    using Ts::operator()...;
+};
+
 enum class Type {
-    VOID, INT, REAL, FUNC, LIST,
+    VOID, INT, REAL, FUNC, LIST, STR,
     ANY // as parameter or return type
 };
 
@@ -20,21 +26,26 @@ inline std::map<std::string, Type> TYPES{
         {"real",    Type::REAL  },
         {"func",    Type::FUNC  },
         {"list",    Type::LIST  },
+        {"str",     Type::STR   },
         {"any",     Type::ANY   }
 };
 
-static std::string_view TYPE_NAMES[] = {"void", "int", "real", "func", "list", "any"};
+static std::string TYPE_NAMES[] = {"void", "int", "real", "func", "list", "str", "any"};
 
-inline std::string_view nameOf(Type type) {
+inline std::string nameOf(Type type) {
     return TYPE_NAMES[(size_t) type];
 }
+
+enum class StringifyScheme {
+    RUNTIME, DUMP, TREE_NODE
+};
 
 struct Parameter {
     Type type;
     std::string name;
 
     [[nodiscard]] std::string type_name() const {
-        return std::string(nameOf(type));
+        return nameOf(type);
     }
 
     [[nodiscard]] std::string toString() const {
@@ -73,14 +84,21 @@ struct List {
         explicit ToStringLockGuard(List const* owner): owner(owner) { owner->toStringLock = true; }
         ~ToStringLockGuard() { owner->toStringLock = false; }
     };
-    [[nodiscard]] std::string toString() const;
+    [[nodiscard]] std::string toString(StringifyScheme scheme) const;
     void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
+};
+
+struct String {
+    const std::string bytes;
+
+    explicit String(std::string bytes): bytes(std::move(bytes)) {}
 };
 
 using int_t = long long;
 using real_t = double;
 using func_t = std::shared_ptr<Function>;
 using list_t = std::shared_ptr<List>;
+using str_t = std::shared_ptr<String>;
 
 template<typename T>
 constexpr Type parseType() {
@@ -94,20 +112,22 @@ constexpr Type parseType() {
         return Type::FUNC;
     } else if constexpr(std::is_same_v<T, list_t>) {
         return Type::LIST;
+    } else if constexpr(std::is_same_v<T, str_t>) {
+        return Type::STR;
     } else if constexpr(std::is_same_v<T, Object>) {
         return Type::ANY;
     }
 }
 
 struct Object {
-    std::variant<std::monostate, int_t, real_t, func_t, list_t> object;
+    std::variant<std::monostate, int_t, real_t, func_t, list_t, str_t> object;
 
     [[nodiscard]] Type type() const {
         return (Type) object.index();
     }
 
     [[nodiscard]] std::string type_name() const {
-        return std::string(nameOf(type()));
+        return nameOf(type());
     }
 
     [[nodiscard]] bool asBool() const {
@@ -117,6 +137,12 @@ struct Object {
     }
 
     [[nodiscard]] int_t& asInt() {
+        if (type() == Type::INT)
+            return std::get<int_t>(object);
+        runtime("expected int but got " + type_name());
+    }
+
+    [[nodiscard]] const int_t& asInt() const {
         if (type() == Type::INT)
             return std::get<int_t>(object);
         runtime("expected int but got " + type_name());
@@ -134,7 +160,7 @@ struct Object {
         if (type == Type::VOID) return {};
         if (type == Type::ANY || this->type() == type) return *this;
         if (this->type() == Type::INT && type == Type::REAL) return {(real_t)std::get<int_t>(object)};
-        runtime("attempt to implicitly cast from " + type_name() + " to " + std::string(nameOf(type)));
+        runtime("attempt to implicitly cast from " + type_name() + " to " + nameOf(type));
     }
 
     void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
@@ -148,7 +174,7 @@ struct Object {
         if (type() != Type::VOID) yield.push_back(*this);
     }
 
-    [[nodiscard]] std::string toString() const;
+    [[nodiscard]] std::string toString(StringifyScheme scheme) const;
 
     template<typename T>
     [[nodiscard]] T as() const {
@@ -169,6 +195,7 @@ struct Object {
             [] (real_t a, int_t b) { return a == b; },
             [] (func_t const& a, func_t const& b) { return a.get() == b.get(); },
             [] (list_t const& a, list_t const& b) { return std::equal(a->elements.begin(), a->elements.end(), b->elements.begin(), b->elements.end()); },
+            [] (str_t const& a, str_t const& b) { return a->bytes == b->bytes; }
         }, object, other.object);
     }
 
@@ -181,6 +208,7 @@ struct Object {
             [] (int_t a, real_t b) { return a < b; },
             [] (real_t a, int_t b) { return a < b; },
             [] (list_t const& a, list_t const& b) { return std::lexicographical_compare(a->elements.begin(), a->elements.end(), b->elements.begin(), b->elements.end()); },
+            [] (str_t const& a, str_t const& b) { return a->bytes < b->bytes; }
         }, object, other.object);
     }
 

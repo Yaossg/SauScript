@@ -1,6 +1,5 @@
 #include "SauScript.hpp"
 
-#include <iostream>
 #include <cstring>
 
 using namespace std;
@@ -17,11 +16,12 @@ void file() {
     ScriptEngine engine(file_output, file_input);
     string script;
     do {
-        char line[256];
+        char line[1024];
         memset(line, 0, sizeof line);
         fgets(line, sizeof line, file_script);
         script += line;
     } while (!feof(file_script));
+    fclose(file_script);
 //    puts("source code: ");
 //    puts(script.c_str());
 //    auto compiled = engine.compile(script.c_str());
@@ -29,21 +29,27 @@ void file() {
 //    puts(compiled->toString().c_str());
 //    puts("syntax tree: ");
 //    puts(compiled->walk().c_str());
-    engine.exec(script);
+    SauScript::Object ret = engine.eval(script);
+    fclose(file_input);
+    fclose(file_output);
+    printf("Program finished and returned %s\n", ret.toString(SauScript::StringifyScheme::DUMP).c_str());
 }
 
 [[noreturn]] void repl() {
     ScriptEngine engine;
 
     while (true) {
-        string line;
+        char line[1024];
         printf(">>>");
-        getline(cin, line);
-        engine.exec(line);
+        fgets(line, sizeof line, stdin);
+        SauScript::Object ret = engine.eval(line);
+        if (ret.type() != SauScript::Type::VOID)
+            printf("%s\n", ret.toString(SauScript::StringifyScheme::DUMP).c_str());
+
     }
 }
 
 int main() {
     file();
-    //repl();
+    repl();
 }

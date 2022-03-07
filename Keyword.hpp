@@ -2,8 +2,6 @@
 
 #include <map>
 
-#include "Lib.hpp"
-
 namespace SauScript {
 
 enum class Keyword {

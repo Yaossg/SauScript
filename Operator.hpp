@@ -1,8 +1,9 @@
 #pragma once
 
 #include <functional>
+#include <variant>
 
-#include "Lib.hpp"
+#include "Diagnostics.hpp"
 
 namespace SauScript::Operators {
 

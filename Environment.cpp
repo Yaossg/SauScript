@@ -8,47 +8,60 @@
 
 namespace SauScript {
 
-void installEnvironment(ScriptEngine* engine) {
+void initEnv(ScriptEngine* engine) {
+    // intrinsics
+    engine->installExternalFunction("eval",     [engine](str_t script) { return engine->eval(script->bytes); });
+    engine->installExternalFunction("repr",     [](Object object) { return std::make_shared<String>(object.toString(StringifyScheme::DUMP)); });
+    engine->installExternalFunction("toString", [](Object object) { return std::make_shared<String>(object.toString(StringifyScheme::RUNTIME)); });
     engine->installExternalFunction("identity", [](Object object) { return object; });
     engine->installExternalFunction("typeid",   [](Object object) { return (int_t)object.type(); });
-
+    engine->installExternalFunction("typename", [](Object object) { return std::make_shared<String>(object.type_name()); });
+    engine->installExternalFunction("int",      [](int_t x) { return x; });
     engine->installExternalFunction("int",      [](real_t x) { return int_t(x); });
     engine->installExternalFunction("real",     [](int_t x) { return real_t(x); });
-
+    engine->installExternalFunction("real",     [](real_t x) { return x; });
+    engine->installExternalFunction("isASCII",  [](int_t x) { return char32_t(x) == x && Unicode::isASCII(x); });
+    engine->installExternalFunction("isUnicode",[](int_t x) { return char32_t(x) == x && Unicode::isUnicode(x); });
+    // io
+    engine->installExternalFunction("flush",    [out = engine->out] { std::fflush(out); });
+    engine->installExternalFunction("output",   [out = engine->out](str_t file) {
+        if (!freopen(file->bytes.c_str(), "w", out)) runtime("Failed to reopen output stream");
+    });
+    engine->installExternalFunction("eof",      [in = engine->in] { return std::feof(in); });
+    engine->installExternalFunction("input",    [in = engine->in](str_t file) {
+        if (!freopen(file->bytes.c_str(), "r", in)) runtime("Failed to reopen input stream");
+    });
     engine->installExternalFunction("putchar",  [out = engine->out](int_t ch) {
         std::fprintf(out, "%s", Unicode::encodeUnicode(ch).c_str());
     });
-    engine->installExternalFunction("print",    [out = engine->out]() {
-        std::fprintf(out, " ");
-    });
     engine->installExternalFunction("print",    [out = engine->out](Object obj) {
-        std::fprintf(out, "%s ", obj.toString().c_str());
+        std::fprintf(out, "%s", obj.toString(StringifyScheme::RUNTIME).c_str());
     });
     engine->installExternalFunction("println",  [out = engine->out] {
         std::fprintf(out, "\n");
     });
     engine->installExternalFunction("println",  [out = engine->out](Object obj) {
-        std::fprintf(out, "%s\n", obj.toString().c_str());
+        std::fprintf(out, "%s\n", obj.toString(StringifyScheme::RUNTIME).c_str());
     });
-
-    engine->installExternalFunction("getchar",  [in = engine->in] {
-        return Unicode::decodeUnicode([in] { return fgetc(in); });
+    engine->installExternalFunction("getchar",  [in = engine->in] { return Unicode::fgetc(in); });
+    engine->installExternalFunction("readLine", [in = engine->in] {
+        return std::make_shared<String>(Unicode::fgets(in, [](char32_t ch) { return ch == '\n'; }));
     });
-    engine->installExternalFunction("readInt",  [in = engine->in] {
-        int_t x;
-        if (!std::fscanf(in, "%lld", &x))
-            runtime("invalid int input");
-        fgetc(in);
-        return x;
+    engine->installExternalFunction("readWord", [in = engine->in] {
+        return std::make_shared<String>(Unicode::fgets(in));
     });
-    engine->installExternalFunction("readReal", [in = engine->in] {
-        real_t x;
-        if (!std::fscanf(in, "%lf", &x))
-            runtime("invalid real input");
-        fgetc(in);
-        return x;
+    engine->installExternalFunction("readInt",  [engine] {
+        return engine->eval(Unicode::fgets(engine->in)).asInt();
     });
-
+    engine->installExternalFunction("readReal", [engine] {
+        return engine->eval(Unicode::fgets(engine->in)).cast(Type::REAL);
+    });
+    engine->installExternalFunction("readUntil",[engine](func_t until) {
+        return std::make_shared<String>(Unicode::fgets(engine->in, [engine, &until](char32_t ch){
+            return until->invokeExternally(engine, {{ch}}).asBool();
+        }));
+    });
+    // list
     engine->installExternalFunction("copy",     [](list_t list) { return std::make_shared<List>(list->elements); });
     engine->installExternalFunction("empty",    [](list_t list) { return (int_t)list->elements.empty(); });
     engine->installExternalFunction("size",     [](list_t list) { return (int_t)list->elements.size(); });
@@ -67,7 +80,7 @@ void installEnvironment(ScriptEngine* engine) {
         }
         return std::make_shared<List>(std::move(result));
     });
-    engine->installExternalFunction("flat",   [](list_t list) {
+    engine->installExternalFunction("flat",     [](list_t list) {
         std::vector<Object> result;
         for (auto&& obj : list->elements) {
             for (auto iterable = obj.asIterable(); auto&& obj : iterable->elements) {
@@ -79,6 +92,15 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("insert",   [](list_t list, int_t index, Object obj) {
         if (index < 0 || index > list->elements.size()) runtime("index out of bound");
         list->mut().insert(list->elements.begin() + index, obj);
+    });
+    engine->installExternalFunction("slice",    [](list_t list, int_t from, int_t to) {
+        if (from > to) runtime("from > to");
+        if (from < 0 || to > list->elements.size()) runtime("index out of bound");
+        std::vector<Object> result;
+        for (int_t i = from; i < to; ++i) {
+            result.push_back(list->elements[i]);
+        }
+        return std::make_shared<List>(result);
     });
     engine->installExternalFunction("removeAt", [](list_t list, int_t index) {
         if (index < 0 || index >= list->elements.size()) runtime("index out of bound");
@@ -109,6 +131,9 @@ void installEnvironment(ScriptEngine* engine) {
             result.push_back({i});
         }
         return std::make_shared<List>(std::move(result));
+    });
+    engine->installExternalFunction("list",     [](int_t size, Object object) {
+        return std::make_shared<List>(std::vector<Object>(size, object));
     });
     engine->installExternalFunction("map",      [engine](list_t list, func_t mapper) {
         std::vector<Object> result;
@@ -142,7 +167,46 @@ void installEnvironment(ScriptEngine* engine) {
         }
         return init;
     });
-
+    // string
+    engine->installExternalFunction("copy",     [](str_t str) { return std::make_shared<String>(str->bytes); });
+    engine->installExternalFunction("empty",    [](str_t str) { return (int_t)str->bytes.empty(); });
+    engine->installExternalFunction("concat",   [](str_t str1, str_t str2) { return std::make_shared<String>(str1->bytes + str2->bytes); });
+    engine->installExternalFunction("startsWith",[](str_t str1, str_t str2) { return str1->bytes.starts_with(str2->bytes); });
+    engine->installExternalFunction("endsWith", [](str_t str1, str_t str2) { return str1->bytes.ends_with(str2->bytes); });
+    engine->installExternalFunction("quote",    [](int_t ch) { return std::make_shared<String>(Unicode::quote(ch)); });
+    engine->installExternalFunction("quote",    [](str_t str) { return std::make_shared<String>(Unicode::quote(str->bytes)); });
+    engine->installExternalFunction("decode",   [](str_t str){
+        std::u32string utf32 = Unicode::decodeUnicode(str->bytes);
+        std::vector<Object> result;
+        for (char32_t ch : utf32) {
+            result.push_back({int_t(ch)});
+        }
+        return std::make_shared<List>(result);
+    });
+    engine->installExternalFunction("encode",   [](list_t list) {
+        std::u32string utf32;
+        for (auto&& obj : list->elements) {
+            utf32 += char32_t(obj.asInt());
+        }
+        return std::make_shared<String>(Unicode::encodeUnicode(utf32));
+    });
+    engine->installExternalFunction("substr",   [](str_t str, int_t from, int_t to) {
+        if (from > to) runtime("from > to");
+        std::u32string utf32 = Unicode::decodeUnicode(str->bytes);
+        if (from < 0 || to > utf32.size()) runtime("index out of bound");
+        return std::make_shared<String>(Unicode::encodeUnicode(utf32.substr(from, to - from)));
+    });
+    engine->installExternalFunction("join",     [](list_t list) {
+        std::string result;
+        for (auto&& obj : list->elements) {
+            result += obj.toString(StringifyScheme::RUNTIME);
+        }
+        return std::make_shared<String>(result);
+    });
+    engine->installExternalFunction("str",     [](int_t size, int_t ch) {
+        return std::make_shared<String>(Unicode::encodeUnicode(std::u32string(size, char32_t(ch))));
+    });
+    // math
     engine->installExternalFunction("ceil",     ::ceil);
     engine->installExternalFunction("floor",    ::floor);
     engine->installExternalFunction("trunc",    ::trunc);
@@ -156,7 +220,6 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("max",      [](int_t a, int_t b) { return a > b ? a : b; });
     engine->installExternalFunction("min",      ::fmin);
     engine->installExternalFunction("max",      ::fmax);
-
     engine->installExternalFunction("exp",      ::exp);
     engine->installExternalFunction("exp2",     ::exp2);
     engine->installExternalFunction("expm1",    ::expm1);
@@ -169,7 +232,6 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("cbrt",     ::cbrt);
     engine->installExternalFunction("hypot",    ::hypot);
     engine->installExternalFunction("hypot",    (real_t(*)(real_t, real_t, real_t))std::hypot);
-
     engine->installExternalFunction("sin",      ::sin);
     engine->installExternalFunction("cos",      ::cos);
     engine->installExternalFunction("tan",      ::tan);
@@ -183,23 +245,22 @@ void installEnvironment(ScriptEngine* engine) {
     engine->installExternalFunction("asinh",    ::asinh);
     engine->installExternalFunction("acosh",    ::acosh);
     engine->installExternalFunction("atanh",    ::atanh);
-
     engine->installExternalFunction("erf",      ::erf);
     engine->installExternalFunction("erfc",     ::erfc);
     engine->installExternalFunction("tgamma",   ::tgamma);
     engine->installExternalFunction("lgamma",   ::lgamma);
     engine->installExternalFunction("beta",     std::beta<real_t, real_t>);
-
     engine->installExternalFunction("gcd",      std::gcd<int_t, int_t>);
     engine->installExternalFunction("lcm",      std::lcm<int_t, int_t>);
     engine->installExternalFunction("midpoint", (int_t(*)(int_t, int_t))std::midpoint);
     engine->installExternalFunction("midpoint", (real_t(*)(real_t, real_t))std::midpoint);
     engine->installExternalFunction("lerp",     (real_t(*)(real_t, real_t, real_t))std::lerp);
-
+    // chrono
     engine->installExternalFunction("nanos",    [] { return std::chrono::system_clock::now().time_since_epoch().count(); });
-    engine->installExternalFunction("micros",   [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000; });
-    engine->installExternalFunction("millis",   [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000'000; });
-
+    engine->installExternalFunction("micros",   [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000LL; });
+    engine->installExternalFunction("millis",   [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000'000LL; });
+    engine->installExternalFunction("seconds",  [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000'000'000LL; });
+    // constants
     {
         using namespace std::numbers;
         engine->global()["e"]           = {e};
@@ -217,4 +278,3 @@ void installEnvironment(ScriptEngine* engine) {
 }
 
 }
-

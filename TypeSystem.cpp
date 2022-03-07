@@ -1,4 +1,5 @@
 #include "Node.hpp"
+#include "Unicode.hpp"
 
 namespace SauScript {
 
@@ -18,7 +19,7 @@ std::string Function::toString() const {
     std::string ret = "(";
     ret += descriptor();
     ret += "=";
-    ret += expr->toString();
+    ret += expr->dump();
     ret += ")";
     return ret;
 }
@@ -105,23 +106,26 @@ void Object::invoke(ScriptEngine* engine, std::vector<Object> const& arguments) 
     }, object);
 }
 
-std::string Object::toString() const {
+std::string toString(real_t x) {
+    size_t len = std::snprintf(nullptr, 0, "%g", x);
+    std::string ret(len, '\0');
+    std::sprintf(ret.data(), "%g", x);
+    if (ret == std::to_string((int_t)x)) ret += ".0";
+    return ret;
+}
+
+std::string Object::toString(StringifyScheme scheme) const {
     return std::visit(overloaded {
-            [](std::monostate) { return std::string("<void>"); },
+            [](std::monostate) { return std::string("{}"); },
             [](int_t x) { return std::to_string(x); },
-            [](real_t x) {
-                size_t len = std::snprintf(nullptr, 0, "%g", x);
-                std::string ret(len, '\0');
-                std::sprintf(ret.data(), "%g", x);
-                if (ret == std::to_string((int_t)x)) ret += ".0";
-                return ret;
-            },
-            [](func_t const& ptr) { return ptr->toString(); },
-            [](list_t const& ptr) { return ptr->toString(); }
+            [](real_t x) { return SauScript::toString(x); },
+            [scheme](func_t const& ptr) { return scheme == StringifyScheme::TREE_NODE ? ptr->descriptor() : ptr->toString(); },
+            [](list_t const& ptr) { return ptr->toString(StringifyScheme::DUMP); },
+            [scheme](str_t const& ptr) { return scheme == StringifyScheme::RUNTIME ? ptr->bytes : Unicode::quote(ptr->bytes); }
     }, object);
 }
 
-std::string List::toString() const {
+std::string List::toString(StringifyScheme scheme) const {
     ToStringLockGuard guard(this);
     bool first = true;
     std::string ret = "[";
@@ -129,7 +133,7 @@ std::string List::toString() const {
         if (first) { first = false; } else { ret += ", "; }
         if (obj.type() == Type::LIST && get<list_t>(obj.object)->toStringLock)
             runtime("recursive list cannot be serialized");
-        ret += obj.toString();
+        ret += obj.toString(scheme);
     }
     return ret + "]";
 }

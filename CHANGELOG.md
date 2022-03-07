@@ -190,3 +190,9 @@ addAll 被 concat 取代，generate 被 iota 取代，indexOf 被 find 取代
 
 删除 lastIndexOf 加入 flat、find_if、无 init 的 reduce
 
+## v1.4
+
+加入字符串
+
+重置 I/O 函数，调整部分函数，加入更多函数
+

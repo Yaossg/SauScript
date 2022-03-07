@@ -9,9 +9,24 @@ std::string SourceLocation::what() const {
     return " at line " + std::to_string(line) + '\n' + code->lines[line - 1] + '\n' + std::string(column - 1, '~') + '^';
 }
 
-SourceCode::SourceCode(std::string raw) : raw(std::move(raw)), lines(splitLines(this->raw)), current(this->raw.data()), start(current), line(1) {
-    tokenize();
+[[nodiscard]] std::vector<std::string> splitLines(std::string raw) {
+    std::vector<std::string> lines;
+    std::string line;
+    for (const char* current = raw.data(); *current; ++current) {
+        if (*current == '\n') {
+            lines.push_back(line);
+            line.clear();
+        } else {
+            line.push_back(*current);
+        }
+    }
+    lines.push_back(line);
+    return lines;
 }
+
+SourceCode::SourceCode(std::string raw)
+    : raw(std::move(raw)), lines(splitLines(this->raw)),
+        current(this->raw.data()), start(current), line(1) {}
 
 bool SourceCode::skipLineBreak(bool strict) {
     switch (*current) {
@@ -153,6 +168,9 @@ void SourceCode::tokenize() {
                 ++current;
             } else if (ch == '\'') {
                 tokens.push_back(Token::literal_int(Unicode::unquoteCharacter(current)).at(location()));
+                ++current;
+            } else if (ch == '"') {
+                tokens.push_back(Token::literal_string(Unicode::unquoteString(current)).at(location()));
                 ++current;
             } else if (isIdentifierStart(ch)) {
                 tokens.push_back(parseIdentifier().at(old));

@@ -10,11 +10,7 @@ namespace SauScript::Unicode {
     runtime("Illegal unicode value");
 }
 
-[[nodiscard]] bool isSurrogate(char32_t ch) {
-    return 0xD800 <= ch && ch <= 0xDFFF;
-}
-
-char32_t hex(char ch) {
+char32_t hex(char8_t ch) {
     if ('0' <= ch && ch <= '9') return ch - '0';
     if ('a' <= ch && ch <= 'f') return ch - 'a' + 10;
     if ('A' <= ch && ch <= 'F') return ch - 'A' + 10;
@@ -66,6 +62,13 @@ std::string encodeUnicode(char32_t unicode) {
     } else {
         illegal();
     }
+}
+
+[[nodiscard]] std::string encodeUnicode(std::u32string const& utf32) {
+    std::string utf8;
+    for (char32_t ch : utf32)
+        utf8 += Unicode::encodeUnicode(ch);
+    return utf8;
 }
 
 char32_t decodeUnicode(const char*& current) {
@@ -135,6 +138,13 @@ int decodeUnicode(std::function<int()> const& current) {
     return result;
 }
 
+[[nodiscard]] std::u32string decodeUnicode(std::string const& utf8) {
+    std::u32string ret;
+    for (const char* current = utf8.data(); *current; ++current)
+        ret += decodeUnicode(current);
+    return ret;
+}
+
 char32_t unquoteCharacter(const char*& current) {
     char32_t result;
     char8_t ch1 = *++current;
@@ -200,7 +210,7 @@ std::string unquoteString(const char*& current) {
             } else {
                 illegal();
             }
-        } if (ch1 == '\\') {
+        } else if (ch1 == '\\') {
             switch (*++current) {
                 case '\'': result += '\''; break;
                 case '\"': result += '\"'; break;
@@ -265,11 +275,26 @@ std::string quote(char32_t unicode) {
     return '\'' + escape(unicode) + '\'';
 }
 
-std::string quote(std::string string) {
+std::string quote(std::string const& string) {
     std::string result;
     for (const char* current = string.data(); *current; ++current)
         result += escape(decodeUnicode(current));
     return '"' + result + '"';
+}
+
+[[nodiscard]] int fgetc(FILE* in) {
+    return decodeUnicode([in] { return std::fgetc(in); });
+}
+
+[[nodiscard]] std::string fgets(FILE* in) {
+    return fgets(in, [](char32_t ch) { return isASCII(ch) && isspace(ch); });
+}
+
+[[nodiscard]] std::string fgets(FILE* in, std::function<bool(char32_t)> const& until) {
+    int ch;
+    std::u32string result;
+    while (ch = Unicode::fgetc(in), !until(ch) && ch != EOF) result += char32_t(ch);
+    return encodeUnicode(result);
 }
 
 }

@@ -2,47 +2,14 @@
 
 #include <string>
 #include <stdexcept>
+#include <memory>
+
+#include "Forward.hpp"
 
 namespace SauScript {
 
-// utilities
-
-template<typename... Ts>
-struct overloaded : Ts... {
-    explicit overloaded(Ts... ts): Ts(ts)... {}
-    using Ts::operator()...;
-};
-
-[[nodiscard]] inline std::vector<std::string> splitLines(std::string raw) {
-    std::vector<std::string> lines;
-    std::string line;
-    for (const char* current = raw.data(); *current; ++current) {
-        if (*current == '\n') {
-            lines.push_back(line);
-            line.clear();
-        } else {
-            line.push_back(*current);
-        }
-    }
-    lines.push_back(line);
-    return lines;
-}
-
-// forward declarations
-
-struct Token;
-struct Function;
-struct Object;
-struct ScriptEngine;
-struct ExprNode;
-struct StmtsNode;
-
-// diagnostics
-
-struct SourceCode;
-
 struct SourceLocation {
-    const SourceCode* code = nullptr;
+    std::shared_ptr<const SourceCode> code = nullptr;
     int line = 0, column = 0;
     [[nodiscard]] std::string what() const;
 };
@@ -58,8 +25,7 @@ struct Error : std::exception {
     std::string descriptor;
     Error(ErrorType type, std::string message, SourceLocation location)
             : type(type), message(std::move(message)), location(location),
-            descriptor(std::string(type == ErrorType::Syntax ? "Syntax" : "Runtime") + " Error: " + this->message +
-                               location.what()) {}
+            descriptor(std::string(type == ErrorType::Syntax ? "Syntax" : "Runtime") + " Error: " + this->message + location.what()) {}
     [[nodiscard]] const char* what() const noexcept override {
         return descriptor.c_str();
     }
@@ -93,7 +59,7 @@ struct RawError {
 }
 
 [[noreturn]] inline void impossible() {
-    std::fprintf(stderr, "Assertion failed");
+    std::fprintf(stderr, "Assertion failed: Impossible to reach here");
     std::terminate();
 }
 

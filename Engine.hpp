@@ -13,7 +13,7 @@ namespace SauScript {
 template<typename R, typename... Args>
 std::function<func_t(ScriptEngine *)> external(std::function<R(Args...)> function);
 
-void installEnvironment(ScriptEngine *list);
+void initEnv(ScriptEngine *list);
 
 enum class JumpTarget {
     NONE, CONTINUE, BREAK, RETURN, THROW
@@ -27,8 +27,6 @@ struct ScriptEngine {
     SourceLocation jumpFrom;
     Object yield;
 
-    std::vector<std::unique_ptr<SourceCode>> compiled;
-
     void jump(JumpTarget jumpTarget, Object yield) {
         this->jumpTarget = jumpTarget;
         this->yield = std::move(yield);
@@ -40,7 +38,7 @@ struct ScriptEngine {
     Operand pop() { auto operand = top(); stack.pop(); return operand; }
 
     ScriptEngine(FILE *out = stdout, FILE *in = stdin) : out(out), in(in) {
-        installEnvironment(this);
+        initEnv(this);
     }
 
     Scope &global() { return scopes.front(); }
@@ -62,7 +60,7 @@ struct ScriptEngine {
     [[nodiscard]] std::unique_ptr<StmtsNode> compileStatements(Token *&current);
     [[nodiscard]] std::unique_ptr<StmtsNode> compile(std::string const& script);
 
-    void exec(std::string const& script, FILE *err = stderr);
+    Object eval(std::string const& script);
 };
 
 struct ScriptScope {

@@ -21,7 +21,7 @@ struct ExprNode {
     }
     virtual void do_push() const = 0;
     [[nodiscard]] virtual std::vector<ExprNode*> children() const { return {}; }
-    [[nodiscard]] virtual std::string toString() const { return descriptor; }
+    [[nodiscard]] virtual std::string dump() const { return descriptor; }
 
     virtual ~ExprNode() = default;
 
@@ -46,9 +46,7 @@ private:
 
 struct ValNode : ExprNode {
     Object val;
-    ValNode(ScriptEngine* engine, SourceLocation location, Object val): ExprNode(
-            val.type() == Type::FUNC ? get<func_t>(val.object)->descriptor() : val.toString(),
-            engine, location), val(std::move(val)) {}
+    ValNode(ScriptEngine* engine, SourceLocation location, Object val): ExprNode(val.toString(StringifyScheme::TREE_NODE), engine, location), val(std::move(val)) {}
 
     void do_push() const override {
         engine->push(val);
@@ -62,8 +60,8 @@ struct ValNode : ExprNode {
         return {};
     }
 
-    [[nodiscard]] std::string toString() const override {
-        return val.toString();
+    [[nodiscard]] std::string dump() const override {
+        return val.toString(StringifyScheme::DUMP);
     }
 };
 
@@ -101,11 +99,11 @@ struct OpUnaryNode : ExprNode {
         return {operand.get()};
     }
 
-    [[nodiscard]] std::string toString() const override {
+    [[nodiscard]] std::string dump() const override {
         if (postfix)
-            return "(" + operand->toString() + " " + std::string(op->literal) + ")";
+            return "(" + operand->dump() + " " + std::string(op->literal) + ")";
         else
-            return "(" + std::string(op->literal) + " " + operand->toString() + ")";
+            return "(" + std::string(op->literal) + " " + operand->dump() + ")";
     }
 };
 
@@ -126,8 +124,8 @@ struct OpBinaryNode : ExprNode {
         return {lhs.get(), rhs.get()};
     }
 
-    [[nodiscard]] std::string toString() const override {
-        return "(" + lhs->toString() + " " + std::string(op->literal) + " " + rhs->toString() + ")";
+    [[nodiscard]] std::string dump() const override {
+        return "(" + lhs->dump() + " " + std::string(op->literal) + " " + rhs->dump() + ")";
     }
 };
 
@@ -149,8 +147,8 @@ struct OpTernaryNode : ExprNode {
         return {cond.get(), lhs.get(), rhs.get()};
     }
 
-    [[nodiscard]] std::string toString() const override {
-        return "(" + cond->toString() + " ? " + lhs->toString() + " : " + rhs->toString() + ")";
+    [[nodiscard]] std::string dump() const override {
+        return "(" + cond->dump() + " ? " + lhs->dump() + " : " + rhs->dump() + ")";
     }
 };
 
@@ -181,8 +179,8 @@ struct OpIndexNode : ExprNode {
         return {list.get(), index.get()};
     }
 
-    [[nodiscard]] std::string toString() const override {
-        return "(" + list->toString() + ")[" + index->toString() + "]";
+    [[nodiscard]] std::string dump() const override {
+        return "(" + list->dump() + ")[" + index->dump() + "]";
     }
 };
 
@@ -221,14 +219,14 @@ struct OpInvokeNode : ExprNode {
         return ret;
     }
 
-    [[nodiscard]] std::string toString() const override {
+    [[nodiscard]] std::string dump() const override {
         std::string ret = "(";
-        ret += func->toString();
+        ret += func->dump();
         ret += ")(";
         bool first = true;
         for (auto&& arg : args) {
             if (first) { first = false; } else { ret += ", "; }
-            ret += arg->toString();
+            ret += arg->dump();
         }
         ret += ")";
         return ret;
@@ -259,12 +257,12 @@ struct ListLiteralNode : ExprNode {
         return ret;
     }
 
-    [[nodiscard]] std::string toString() const override {
+    [[nodiscard]] std::string dump() const override {
         std::string ret = "[";
         bool first = true;
         for (auto&& obj : objs) {
             if (first) { first = false; } else { ret += ", "; }
-            ret += obj->toString();
+            ret += obj->dump();
         }
         ret += "]";
         return ret;
@@ -299,10 +297,10 @@ struct StmtsNode : ExprNode {
         return ret;
     }
 
-    [[nodiscard]] std::string toString() const override {
+    [[nodiscard]] std::string dump() const override {
         std::string ret = "{";
         for (auto&& stmt : stmts) {
-            ret += stmt->toString();
+            ret += stmt->dump();
             ret += ";";
         }
         ret += "}";
@@ -314,7 +312,7 @@ struct StmtsNode : ExprNode {
         bool first = true;
         for (auto&& stmt : stmts) {
             if (first) { first = false; } else { ret += ","; }
-            ret += stmt->toString();
+            ret += stmt->dump();
         }
         return ret;
     }
@@ -358,8 +356,8 @@ struct WhileNode : ExprNode {
         return {cond.get(), loop.get()};
     }
 
-    [[nodiscard]] std::string toString() const override {
-        return "while " + cond->toString() + loop->toString();
+    [[nodiscard]] std::string dump() const override {
+        return "while " + cond->dump() + loop->dump();
     }
 };
 
@@ -410,8 +408,8 @@ struct ForNode : ExprNode {
         return {init.get(), cond.get(), iter.get(), loop.get()};
     }
 
-    [[nodiscard]] std::string toString() const override {
-        return "for " + init->toString() + ";" + cond->toString() + ";" + iter->toString() + loop->toString();
+    [[nodiscard]] std::string dump() const override {
+        return "for " + init->dump() + ";" + cond->dump() + ";" + iter->dump() + loop->dump();
     }
 };
 
@@ -456,8 +454,8 @@ struct ForEachNode : ExprNode {
         return {iter.get(), loop.get()};
     }
 
-    [[nodiscard]] std::string toString() const override {
-        return "for " + name + ":" + iter->toString() + loop->toString();
+    [[nodiscard]] std::string dump() const override {
+        return "for " + name + ":" + iter->dump() + loop->dump();
     }
 };
 
@@ -482,8 +480,8 @@ struct IfElseNode : ExprNode {
         return {cond.get(), then.get(), else_.get()};
     }
 
-    [[nodiscard]] std::string toString() const override {
-        return "if " + cond->toString() + then->toString() + "else" + else_->toString();
+    [[nodiscard]] std::string dump() const override {
+        return "if " + cond->dump() + then->dump() + "else" + else_->dump();
     }
 };
 
@@ -514,8 +512,8 @@ struct TryCatchNode : ExprNode {
         return {try_.get(), catch_.get()};
     }
 
-    [[nodiscard]] std::string toString() const override {
-        return "try" + try_->toString() + "catch " + name + catch_->toString();
+    [[nodiscard]] std::string dump() const override {
+        return "try" + try_->dump() + "catch " + name + catch_->dump();
     }
 };
 
@@ -530,10 +528,10 @@ std::vector<Parameter> externalParameters(std::index_sequence<I...>) {
 }
 
 template<typename R, typename... Args>
-struct ExternalFunctionInvocationNode : ExprNode {
+struct EFINode : ExprNode { // use a shorter name to compress binary size
     std::function<R(Args...)> function;
 
-    ExternalFunctionInvocationNode(ScriptEngine *engine, std::function<R(Args...)> function)
+    EFINode(ScriptEngine *engine, std::function<R(Args...)> function)
             : ExprNode("<external function invocation>", engine, {}), function(function) {}
 
     void do_push() const override {
@@ -558,7 +556,7 @@ std::function<func_t(ScriptEngine*)> external(std::function<R(Args...)> function
     static_assert((!sizeof...(Args) || ... || !std::is_reference_v<Args>));
     return [function](ScriptEngine* engine) {
         return std::make_shared<Function>(Function{parseType<R>(), externalParameters<Args...>(std::index_sequence_for<Args...>()),
-                                                   std::make_unique<ExternalFunctionInvocationNode<R, Args...>>(engine, function)});
+                                                   std::make_unique<EFINode<R, Args...>>(engine, function)});
     };
 }
 

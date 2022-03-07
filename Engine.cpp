@@ -20,6 +20,8 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                     return std::make_unique<ValNode>(this, token.location, Object{token.literal_int()});
                 case TokenType::LITERAL_REAL:
                     return std::make_unique<ValNode>(this, token.location, Object{token.literal_real()});
+                case TokenType::LITERAL_STRING:
+                    return std::make_unique<ValNode>(this, token.location, Object{std::make_shared<String>(token.literal_string())});
                 case TokenType::IDENTIFIER:
                     return std::make_unique<RefNode>(this, token.location, token.identifier());
                 case TokenType::KEYWORD: {
@@ -70,7 +72,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
         case Operators::LEVEL_PREFIX: {
             if (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {
                 SourceLocation location = current++->location;
-                while (current->type == TokenType::LINEBREAK) ++current;
+                if (current->type == TokenType::LINEBREAK) syntax("redundant linebreak is forbidden after unary operator");
                 return std::make_unique<OpUnaryNode>(this, location, compileExpression(current, level), op);
             }
             return compileExpression(current, level + 1);
@@ -291,21 +293,21 @@ std::unique_ptr<StmtsNode> ScriptEngine::compileStatements(Token*& current) {
 }
 
 std::unique_ptr<StmtsNode> ScriptEngine::compile(std::string const& script) {
-    auto code = std::make_unique<SourceCode>(script);
+    auto code = std::make_shared<SourceCode>(script);
+    code->tokenize();
     Token* current = code->tokens.data();
     auto stmts = compileStatements(current);
     if (*current != Token::terminator()) syntax("stray tokens", current->location);
-    compiled.push_back(std::move(code));
     return stmts;
 }
 
-void ScriptEngine::exec(std::string const& script, FILE* err) {
+Object ScriptEngine::eval(std::string const& script) {
     try {
         compile(script)->push_unscoped();
-        Operand ret;
+        Object ret;
         switch (jumpTarget) {
             case JumpTarget::THROW:
-                fprintf(err, "Unhandled exception: %s", yield.toString().c_str());
+                fprintf(stderr, "Unhandled exception: %s", yield.toString(StringifyScheme::DUMP).c_str());
                 break;
             case JumpTarget::BREAK:
                 runtime("Wild break jump", jumpFrom);
@@ -315,22 +317,24 @@ void ScriptEngine::exec(std::string const& script, FILE* err) {
                 ret = yield;
                 break;
             case JumpTarget::NONE:
-                ret = pop();
+                ret = pop().val();
                 break;
         }
-        if (ret.val().type() != Type::VOID)
-            fprintf(out, "%s\n", ret.val().toString().c_str());
+        return ret;
     } catch (Error& e) {
-        fprintf(err, "%s\n", e.what());
+        fprintf(stderr, "%s\n", e.what());
+    } catch (RawError& e) {
+        fprintf(stderr, "Fatal compiler internal error occurred, message reported: %s", e.message.c_str());
     }
     if (!stack.empty()) {
-        fprintf(err, "Memory leaked: %d\n", stack.size());
+        fprintf(stderr, "Memory leaked: %d\n", stack.size());
         while (!stack.empty()) {
-            fprintf(err, "Remains: %s\n", stack.top().val().toString().c_str());
+            fprintf(stderr, "Remains: %s\n", stack.top().val().toString(StringifyScheme::DUMP).c_str());
             stack.pop();
         }
     }
     jumpTarget = JumpTarget::NONE;
+    return {};
 }
 
 }
