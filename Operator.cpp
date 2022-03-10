@@ -22,8 +22,7 @@ template<typename Fn>
 auto unary(Fn fn) {
     return [fn](ExprNode* node) {
         auto* engine = node->engine;
-        node->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (node->push()) return;
         fn(engine);
     };
 }
@@ -32,11 +31,9 @@ template<typename Fn>
 auto binary(Fn fn) {
     return [fn](ExprNode* lhs, ExprNode* rhs) {
         auto* engine = lhs->engine;
-        lhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (lhs->push()) return;
         auto a = engine->pop();
-        rhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (rhs->push()) return;
         auto b = engine->pop();
         engine->push(Object{fn(a.val(), b.val())});
     };
@@ -46,11 +43,9 @@ template<typename Fn>
 auto simpleBinary(Fn fn) {
     return [fn](ExprNode* lhs, ExprNode* rhs) {
         auto* engine = lhs->engine;
-        lhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (lhs->push()) return;
         auto a = engine->pop();
-        rhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (rhs->push()) return;
         auto b = engine->pop();
         engine->push(std::visit([fn](auto lhs, auto rhs) { return Object{fn(*lhs, *rhs)}; },
                                 a.val().asNumber(), b.val().asNumber()));
@@ -61,11 +56,9 @@ template<typename Fn>
 auto intBinary(Fn fn, Assertion* an = noop_assert) {
     return [fn, an](ExprNode* lhs, ExprNode* rhs) {
         auto* engine = lhs->engine;
-        lhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (lhs->push()) return;
         auto a = lhs->engine->pop().val().asInt();
-        rhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (rhs->push()) return;
         auto b = rhs->engine->pop().val().asInt();
         an(b);
         engine->push(Object{fn(a, b)});
@@ -76,11 +69,9 @@ template<typename Fn>
 auto assignment(Fn fn) {
     return [fn](ExprNode* lhs, ExprNode* rhs) {
         auto* engine = lhs->engine;
-        lhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (lhs->push()) return;
         auto a = engine->pop();
-        rhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (rhs->push()) return;
         auto b = engine->pop();
         fn(a.ref(), b.val());
         engine->push(a);
@@ -91,11 +82,9 @@ template<typename Fn>
 auto simpleAssignment(Fn fn) {
     return [fn](ExprNode* lhs, ExprNode* rhs) {
         auto* engine = lhs->engine;
-        lhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (lhs->push()) return;
         auto a = engine->pop();
-        rhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (rhs->push()) return;
         auto b = engine->pop();
         std::visit(fn, a.ref()->asNumber(), b.val().asNumber());
         engine->push(a);
@@ -106,11 +95,9 @@ template<typename Fn>
 auto intAssignment(Fn fn, Assertion* an = noop_assert) {
     return [fn, an](ExprNode* lhs, ExprNode* rhs) {
         auto* engine = lhs->engine;
-        lhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (lhs->push()) return;
         auto a = engine->pop();
-        rhs->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (rhs->push()) return;
         int_t b = engine->pop().val().asInt();
         an(b);
         fn(a.ref()->asInt(), b);
@@ -121,7 +108,7 @@ auto intAssignment(Fn fn, Assertion* an = noop_assert) {
 const std::vector<Operator> OPERATORS[14] {
         {
                 {"throw", unary([] (ScriptEngine* engine) {
-                    engine->jump(JumpTarget::THROW, engine->pop().val());
+                    runtime(engine->pop().val().toString(StringifyScheme::RUNTIME));
                 })},
                 {"break", unary([] (ScriptEngine* engine) {
                     engine->jump(JumpTarget::BREAK, engine->pop().val());
@@ -133,9 +120,7 @@ const std::vector<Operator> OPERATORS[14] {
                     engine->jump(JumpTarget::RETURN, engine->pop().val());
                 })},
                 {":=", [](ExprNode* lhs, ExprNode* rhs) {
-                    auto* engine = rhs->engine;
-                    rhs->push();
-                    if (engine->jumpTarget != JumpTarget::NONE) return;
+                    if (rhs->push()) return;
                     if (auto* ref = dynamic_cast<RefNode*>(lhs))
                         ref->initialize();
                     else
@@ -150,7 +135,7 @@ const std::vector<Operator> OPERATORS[14] {
                 {"/=", assignment([](Object* lhs, Object rhs) {
                     std::visit(overloaded {
                             [](int_t* lhs, auto* rhs) { division_assert(*rhs); *lhs /= *rhs; },
-                            [](auto* lhs, auto* rhs) { *lhs /= *rhs; }
+                            [](real_t* lhs, auto* rhs) { *lhs /= real_t(*rhs); }
                     }, lhs->asNumber(), rhs.asNumber());
                 })},
                 {"%=", intAssignment([](int_t& lhs, int_t rhs) { lhs %= rhs; }, division_assert)},
@@ -163,16 +148,14 @@ const std::vector<Operator> OPERATORS[14] {
         },
         {{"||", [](ExprNode *lhs, ExprNode *rhs) {
             auto* engine = lhs->engine;
-            lhs->push();
-            if (engine->jumpTarget != JumpTarget::NONE) return;
+            if (lhs->push()) return;
             if (engine->top().val().asBool()) return;
             engine->pop();
             rhs->push();
         }}},
         {{"&&", [](ExprNode *lhs, ExprNode *rhs) {
             auto* engine = lhs->engine;
-            lhs->push();
-            if (engine->jumpTarget != JumpTarget::NONE) return;
+            if (lhs->push()) return;
             if (!engine->top().val().asBool()) return;
             engine->pop();
             rhs->push();
@@ -181,16 +164,24 @@ const std::vector<Operator> OPERATORS[14] {
         {{"^", intBinary(std::bit_xor<int_t>{})}},
         {{"&", intBinary(std::bit_and<int_t>{})}},
         {
-                {"==", binary(std::equal_to<>{})},
-                {"!=", binary(std::not_equal_to<>{})}
+                {"==", binary(std::equal_to<Object>{})},
+                {"!=", binary(std::not_equal_to<Object>{})}
         },
         {
-                {"<",  binary(std::less<>{})},
-                {">",  binary(std::greater<>{})},
-                {"<=", binary(std::less_equal<>{})},
-                {">=", binary(std::greater_equal<>{})}
+                {"<",  binary(std::less<Object>{})},
+                {">",  binary(std::greater<Object>{})},
+                {"<=", binary(std::less_equal<Object>{})},
+                {">=", binary(std::greater_equal<Object>{})}
         },
-        {{"<=>", binary([](auto lhs, auto rhs) { return lhs == rhs ? 0 : lhs < rhs ? -1 : 1; })}},
+        {{"<=>", binary([](Object const& lhs, Object const& rhs) {
+            if (lhs == rhs) return 0;
+            auto cmp = lhs <=> rhs;
+            if (cmp == std::partial_ordering::unordered) runtime("unordered three-way comparison");
+            if (cmp == std::partial_ordering::equivalent) return 0;
+            if (cmp == std::partial_ordering::less) return -1;
+            if (cmp == std::partial_ordering::greater) return 1;
+            impossible();
+        })}},
         {
                 {"<<", intBinary([](int_t lhs, int_t rhs) { return lhs << rhs; }, shift_assert)},
                 {">>", intBinary([](int_t lhs, int_t rhs) { return lhs >> rhs; }, shift_assert)},
@@ -202,19 +193,12 @@ const std::vector<Operator> OPERATORS[14] {
         },
         {
                 {"*", simpleBinary(std::multiplies<>{})},
-                {"/", [](ExprNode* lhs, ExprNode* rhs) {
-                    auto* engine = lhs->engine;
-                    lhs->push();
-                    if (engine->jumpTarget != JumpTarget::NONE) return;
-                    auto a = engine->pop();
-                    rhs->push();
-                    if (engine->jumpTarget != JumpTarget::NONE) return;
-                    auto b = engine->pop();
-                    engine->push(std::visit(overloaded {
-                            [](int_t* lhs, int_t* rhs) { division_assert(*rhs); return Object{*lhs / *rhs}; },
-                            [](auto* lhs, auto* rhs) { return Object{*lhs / *rhs}; }
-                    }, a.val().asNumber(), b.val().asNumber()));
-                }},
+                {"/", binary([](Object const& lhs, Object const& rhs) {
+                    return std::visit(overloaded {
+                            [](int_t const* lhs, int_t const* rhs) { division_assert(*rhs); return Object{*lhs / *rhs}; },
+                            [](auto lhs, auto rhs) { return Object{*lhs / *rhs}; }
+                    }, lhs.asNumber(), rhs.asNumber());
+                })},
                 {"%", intBinary(std::modulus<int_t>{}, division_assert)}
         },
         {

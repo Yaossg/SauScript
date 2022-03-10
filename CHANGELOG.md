@@ -196,3 +196,15 @@ addAll 被 concat 取代，generate 被 iota 取代，indexOf 被 find 取代
 
 重置 I/O 函数，调整部分函数，加入更多函数
 
+暂时删除自定义 err
+
+### v1.4.1
+
+更好的异常
+
+重新加入自定义 err
+
+for 循环现在只能 for-each
+
+更好的比较运算
+

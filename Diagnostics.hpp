@@ -24,8 +24,8 @@ struct Error : std::exception {
     SourceLocation location;
     std::string descriptor;
     Error(ErrorType type, std::string message, SourceLocation location)
-            : type(type), message(std::move(message)), location(location),
-            descriptor(std::string(type == ErrorType::Syntax ? "Syntax" : "Runtime") + " Error: " + this->message + location.what()) {}
+            : type(type), message(std::move(message)), location(std::move(location)),
+            descriptor(std::string(type == ErrorType::Syntax ? "Syntax" : "Runtime") + " Error: " + this->message + this->location.what()) {}
     [[nodiscard]] const char* what() const noexcept override {
         return descriptor.c_str();
     }
@@ -35,10 +35,10 @@ struct RawError {
     ErrorType type;
     std::string message;
     [[noreturn]] void rethrow(SourceLocation location) const {
-        throw Error(type, message, location);
+        throw Error(type, message, std::move(location));
     }
     [[noreturn]] void rethrowAsSyntaxError(SourceLocation location) const {
-        throw Error(ErrorType::Syntax, message, location);
+        throw Error(ErrorType::Syntax, message, std::move(location));
     }
 };
 
@@ -47,7 +47,7 @@ struct RawError {
 }
 
 [[noreturn]] inline void syntax(std::string const& message, SourceLocation location) {
-    throw Error(ErrorType::Syntax, message, location);
+    throw Error(ErrorType::Syntax, message, std::move(location));
 }
 
 [[noreturn]] inline void runtime(std::string const& message) {
@@ -55,11 +55,11 @@ struct RawError {
 }
 
 [[noreturn]] inline void runtime(std::string const& message, SourceLocation location) {
-    throw Error(ErrorType::Runtime, message, location);
+    throw Error(ErrorType::Runtime, message, std::move(location));
 }
 
 [[noreturn]] inline void impossible() {
-    std::fprintf(stderr, "Assertion failed: Impossible to reach here");
+    std::fprintf(stderr, "Assertion failed: Impossible to reach here\n");
     std::terminate();
 }
 

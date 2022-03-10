@@ -24,7 +24,7 @@ std::string Function::toString() const {
     return ret;
 }
 
-void Function::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) const {
+Object Function::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) const {
     if (parameters.size() != arguments.size())
         runtime("expected " + std::to_string(parameters.size()) + " argument(s) but got " + std::to_string(arguments.size()));
     ScriptScope scope(engine);
@@ -50,8 +50,7 @@ void Function::invoke(ScriptEngine *engine, const std::vector<Object> &arguments
             } catch (RawError& re) {
                 re.rethrow(engine->jumpFrom);
             }
-        case JumpTarget::THROW:
-            return;
+            return engine->pop().val();
         case JumpTarget::BREAK:
             runtime("Wild break jump", engine->jumpFrom);
         case JumpTarget::CONTINUE:
@@ -59,13 +58,7 @@ void Function::invoke(ScriptEngine *engine, const std::vector<Object> &arguments
     }
 }
 
-Object Function::invokeExternally(ScriptEngine *engine, const std::vector<Object> &arguments) const {
-    invoke(engine, arguments);
-    if (engine->jumpTarget != JumpTarget::NONE) runtime("internal throw in external callback is forbidden");
-    return engine->pop().val();
-}
-
-void List::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) const {
+Object List::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) const {
     std::vector<func_t> candidates;
     size_t least_promoted = arguments.size();
     for (auto&& obj : elements) {
@@ -95,14 +88,14 @@ void List::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) co
         runtime("no function is matched in the set of overloads");
     if (candidates.size() > 1)
         runtime("multiple functions are matched in the set of overloads");
-    candidates.front()->invoke(engine, arguments);
+    return candidates.front()->invoke(engine, arguments);
 }
 
-void Object::invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const {
-    std::visit(overloaded {
-        [] (auto x) { runtime("not invocable"); },
-        [&] (func_t const& func) { func->invoke(engine, arguments); },
-        [&] (list_t const& func) { func->invoke(engine, arguments); }
+Object Object::invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const {
+    return std::visit(overloaded {
+        [] (auto x) -> Object { runtime("not invocable"); },
+        [&] (func_t const& func) { return func->invoke(engine, arguments); },
+        [&] (list_t const& func) { return func->invoke(engine, arguments); }
     }, object);
 }
 

@@ -14,8 +14,9 @@ struct ExprNode {
     ExprNode(std::string descriptor, ScriptEngine* engine, SourceLocation location)
         : descriptor(std::move(descriptor)), engine(engine), location(location) {}
 
-    void push() const try {
+    bool push() const try {
         do_push();
+        return engine->jumpTarget != JumpTarget::NONE;
     } catch (RawError& re) {
         re.rethrow(location);
     }
@@ -138,8 +139,7 @@ struct OpTernaryNode : ExprNode {
                   cond(std::move(cond)), lhs(std::move(lhs)), rhs(std::move(rhs)) {}
 
     void do_push() const override {
-        cond->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (cond->push()) return;
         engine->pop().val().asBool() ? lhs->push() : rhs->push();
     }
 
@@ -161,12 +161,10 @@ struct OpIndexNode : ExprNode {
                 list(std::move(list)), index(std::move(index)) {}
 
     void do_push() const override {
-        list->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (list->push()) return;
         auto t = engine->pop();
         auto a = std::get<list_t>(t.val().object);
-        index->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (index->push()) return;
         auto b = engine->pop().val().asInt();
         if (b < 0 || b >= a->elements.size()) runtime("list index access out of bound", location);
         if (t.val_or_ref.index() && !a->mutLock)
@@ -195,14 +193,12 @@ struct OpInvokeNode : ExprNode {
     void do_push() const override {
         std::vector<Object> objects;
         for (auto&& arg : args) {
-            arg->push();
-            if (engine->jumpTarget != JumpTarget::NONE) return;
+            if (arg->push()) return;
             objects.push_back(engine->pop().val());
         }
-        func->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (func->push()) return;
         try {
-            engine->pop().val().invoke(engine, objects);
+            engine->push(engine->pop().val().invoke(engine, objects));
         } catch (Error& e) {
             e.descriptor += '\n';
             e.descriptor += "  invoke from here";
@@ -234,16 +230,15 @@ struct OpInvokeNode : ExprNode {
 };
 
 struct ListLiteralNode : ExprNode {
-    std::vector<std::unique_ptr<ExprNode>> objs;
+    std::vector<std::unique_ptr<ExprNode>> elements;
     ListLiteralNode(ScriptEngine* engine, SourceLocation location,
-                    std::vector<std::unique_ptr<ExprNode>> objs): ExprNode("[]", engine, location),
-                    objs(std::move(objs)) {}
+                    std::vector<std::unique_ptr<ExprNode>> elements): ExprNode("[]", engine, location),
+                    elements(std::move(elements)) {}
 
     void do_push() const override {
         std::vector<Object> objects;
-        for (auto&& obj : objs) {
-            obj->push();
-            if (engine->jumpTarget != JumpTarget::NONE) return;
+        for (auto&& element: elements) {
+            if (element->push()) return;
             objects.push_back(engine->pop().val());
         }
         engine->push(Object{std::make_shared<List>(std::move(objects))});
@@ -251,8 +246,8 @@ struct ListLiteralNode : ExprNode {
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         std::vector<ExprNode*> ret;
-        for (auto&& obj : objs) {
-            ret.push_back(obj.get());
+        for (auto&& element : elements) {
+            ret.push_back(element.get());
         }
         return ret;
     }
@@ -260,9 +255,9 @@ struct ListLiteralNode : ExprNode {
     [[nodiscard]] std::string dump() const override {
         std::string ret = "[";
         bool first = true;
-        for (auto&& obj : objs) {
+        for (auto&& element : elements) {
             if (first) { first = false; } else { ret += ", "; }
-            ret += obj->dump();
+            ret += element->dump();
         }
         ret += "]";
         return ret;
@@ -282,8 +277,7 @@ struct StmtsNode : ExprNode {
     void push_unscoped() const {
         Operand ret;
         for (auto&& stmt : stmts) {
-            stmt->push();
-            if (engine->jumpTarget != JumpTarget::NONE) return;
+            if (stmt->push()) return;
             ret = engine->pop();
         }
         engine->push(ret);
@@ -362,66 +356,14 @@ struct WhileNode : ExprNode {
 };
 
 struct ForNode : ExprNode {
-    std::unique_ptr<ExprNode> init;
-    std::unique_ptr<ExprNode> cond;
-    std::unique_ptr<ExprNode> iter;
-    std::unique_ptr<ExprNode> loop;
-    ForNode(ScriptEngine* engine, SourceLocation location,
-            std::unique_ptr<ExprNode> init,
-            std::unique_ptr<ExprNode> cond,
-            std::unique_ptr<ExprNode> iter,
-            std::unique_ptr<ExprNode> loop): ExprNode("for", engine, location),
-            init(std::move(init)), cond(std::move(cond)), iter(std::move(iter)), loop(std::move(loop)) {}
-
-    void do_push() const override {
-        ScriptScope scope(engine);
-        std::vector<Object> yield;
-        init->push();
-        if (engine->jumpTarget != JumpTarget::NONE) goto end;
-        engine->pop();
-        begin:
-        cond->push();
-        if (engine->jumpTarget == JumpTarget::NONE) {
-            if (!engine->pop().val().asBool()) goto end;
-            loop->push();
-            if (engine->jumpTarget == JumpTarget::NONE)
-                engine->pop().val().yield(yield);
-        }
-        if (engine->jumpTarget == JumpTarget::CONTINUE) {
-            engine->jumpTarget = JumpTarget::NONE;
-            engine->yield.yield(yield);
-        }
-        if (engine->jumpTarget != JumpTarget::NONE) goto end;
-        iter->push();
-        engine->pop();
-        goto begin;
-        end:
-        if (engine->jumpTarget == JumpTarget::BREAK) {
-            engine->jumpTarget = JumpTarget::NONE;
-            engine->push(engine->yield);
-        } else if (engine->jumpTarget == JumpTarget::NONE) {
-            engine->push(Object{std::make_shared<List>(std::move(yield))});
-        }
-    }
-
-    [[nodiscard]] std::vector<ExprNode*> children() const override {
-        return {init.get(), cond.get(), iter.get(), loop.get()};
-    }
-
-    [[nodiscard]] std::string dump() const override {
-        return "for " + init->dump() + ";" + cond->dump() + ";" + iter->dump() + loop->dump();
-    }
-};
-
-struct ForEachNode : ExprNode {
     std::string name;
     std::unique_ptr<ExprNode> iter;
     std::unique_ptr<ExprNode> loop;
-    ForEachNode(ScriptEngine* engine, SourceLocation location,
-                std::string name,
-                std::unique_ptr<ExprNode> iter,
-                std::unique_ptr<ExprNode> loop): ExprNode("for-each " + name, engine, location),
-                name(std::move(name)), iter(std::move(iter)), loop(std::move(loop)) {}
+    ForNode(ScriptEngine* engine, SourceLocation location,
+            std::string name,
+            std::unique_ptr<ExprNode> iter,
+            std::unique_ptr<ExprNode> loop): ExprNode("for " + name, engine, location),
+            name(std::move(name)), iter(std::move(iter)), loop(std::move(loop)) {}
 
     void do_push() const override {
         ScriptScope scope(engine);
@@ -471,8 +413,7 @@ struct IfElseNode : ExprNode {
 
     void do_push() const override {
         ScriptScope scope(engine);
-        cond->push();
-        if (engine->jumpTarget != JumpTarget::NONE) return;
+        if (cond->push()) return;
         engine->pop().val().asBool() ? then->push() : else_->push();
     }
 
@@ -496,14 +437,12 @@ struct TryCatchNode : ExprNode {
                  try_(std::move(try_)), name(std::move(name)), catch_(std::move(catch_)) {}
 
     void do_push() const override {
-        {
+        try {
             ScriptScope scope(engine);
             try_->push();
-        }
-        if (engine->jumpTarget == JumpTarget::THROW) {
-            engine->jumpTarget = JumpTarget::NONE;
+        } catch (Error& e) {
             ScriptScope scope(engine);
-            engine->local()[name] = engine->yield;
+            engine->local()[name] = {std::make_shared<String>(e.message)};
             catch_->push();
         }
     }
@@ -528,11 +467,11 @@ std::vector<Parameter> externalParameters(std::index_sequence<I...>) {
 }
 
 template<typename R, typename... Args>
-struct EFINode : ExprNode { // use a shorter name to compress binary size
+struct ESNode : ExprNode {
     std::function<R(Args...)> function;
 
-    EFINode(ScriptEngine *engine, std::function<R(Args...)> function)
-            : ExprNode("<external function invocation>", engine, {}), function(function) {}
+    ESNode(ScriptEngine *engine, std::function<R(Args...)> function)
+            : ExprNode("<external source>", engine, {}), function(function) {}
 
     void do_push() const override {
         engine->push(eval(std::index_sequence_for<Args...>()));
@@ -551,13 +490,11 @@ struct EFINode : ExprNode { // use a shorter name to compress binary size
 };
 
 template<typename R, typename... Args>
-std::function<func_t(ScriptEngine*)> external(std::function<R(Args...)> function) {
+func_t ScriptEngine::external(std::function<R(Args...)> function) {
     static_assert(!std::is_reference_v<R>);
     static_assert((!sizeof...(Args) || ... || !std::is_reference_v<Args>));
-    return [function](ScriptEngine* engine) {
-        return std::make_shared<Function>(Function{parseType<R>(), externalParameters<Args...>(std::index_sequence_for<Args...>()),
-                                                   std::make_unique<EFINode<R, Args...>>(engine, function)});
-    };
+    return std::make_shared<Function>(Function{parseType<R>(), externalParameters<Args...>(std::index_sequence_for<Args...>()),
+                                               std::make_unique<ESNode<R, Args...>>(this, function)});
 }
 
 }

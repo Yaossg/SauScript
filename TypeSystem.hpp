@@ -60,8 +60,7 @@ struct Function {
 
     [[nodiscard]] std::string descriptor() const;
     [[nodiscard]] std::string toString() const;
-    void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
-    Object invokeExternally(ScriptEngine* engine, std::vector<Object> const& arguments) const;
+    Object invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 };
 
 struct List {
@@ -85,7 +84,7 @@ struct List {
         ~ToStringLockGuard() { owner->toStringLock = false; }
     };
     [[nodiscard]] std::string toString(StringifyScheme scheme) const;
-    void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
+    Object invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 };
 
 struct String {
@@ -156,6 +155,14 @@ struct Object {
         runtime("expected number but got " + type_name());
     }
 
+    [[nodiscard]] std::variant<int_t const*, real_t const*> asNumber() const {
+        switch (type()) {
+            case Type::INT: return &std::get<int_t>(object);
+            case Type::REAL: return &std::get<real_t>(object);
+        }
+        runtime("expected number but got " + type_name());
+    }
+
     [[nodiscard]] Object cast(Type type) const {
         if (type == Type::VOID) return {};
         if (type == Type::ANY || this->type() == type) return *this;
@@ -163,7 +170,7 @@ struct Object {
         runtime("attempt to implicitly cast from " + type_name() + " to " + nameOf(type));
     }
 
-    void invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
+    Object invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 
     [[nodiscard]] list_t asIterable() const {
         if (type() != Type::LIST) runtime("not iterable");
@@ -187,39 +194,29 @@ struct Object {
 
     bool operator==(Object const& other) const {
         return std::visit(overloaded {
-            [] (auto a, auto b) { return false; },
-            [] (std::monostate, std::monostate) { return true; },
-            [] (int_t a, int_t b) { return a == b; },
-            [] (real_t a, real_t b) { return a == b; },
-            [] (int_t a, real_t b) { return a == b; },
-            [] (real_t a, int_t b) { return a == b; },
-            [] (func_t const& a, func_t const& b) { return a.get() == b.get(); },
-            [] (list_t const& a, list_t const& b) { return std::equal(a->elements.begin(), a->elements.end(), b->elements.begin(), b->elements.end()); },
-            [] (str_t const& a, str_t const& b) { return a->bytes == b->bytes; }
+            [](auto a, auto b) { return false; },
+            [](std::monostate, std::monostate) { return true; },
+            [](int_t a, int_t b) { return a == b; },
+            [](real_t a, real_t b) { return a == b; },
+            [](int_t a, real_t b) { return a == b; },
+            [](real_t a, int_t b) { return a == b; },
+            [](func_t const& a, func_t const& b) { return a.get() == b.get(); },
+            [](list_t const& a, list_t const& b) { return a->elements == b->elements; },
+            [](str_t const& a, str_t const& b) { return a->bytes == b->bytes; }
         }, object, other.object);
     }
 
-    bool operator<(Object const& other) const {
+    std::partial_ordering operator<=>(Object const& other) const {
         return std::visit(overloaded {
-            [] (auto a, auto b) -> bool { runtime("not comparable"); },
-            [] (std::monostate, std::monostate) { return false; },
-            [] (int_t a, int_t b) { return a < b; },
-            [] (real_t a, real_t b) { return a < b; },
-            [] (int_t a, real_t b) { return a < b; },
-            [] (real_t a, int_t b) { return a < b; },
-            [] (list_t const& a, list_t const& b) { return std::lexicographical_compare(a->elements.begin(), a->elements.end(), b->elements.begin(), b->elements.end()); },
-            [] (str_t const& a, str_t const& b) { return a->bytes < b->bytes; }
+            [](auto a, auto b) { return std::partial_ordering::unordered; },
+            [](std::monostate, std::monostate) { return std::partial_ordering::equivalent; },
+            [](int_t a, int_t b) -> std::partial_ordering { return a <=> b; },
+            [](real_t a, real_t b) { return a <=> b; },
+            [](int_t a, real_t b) { return a <=> b; },
+            [](real_t a, int_t b) { return a <=> b; },
+            [](list_t const& a, list_t const& b) { return a->elements <=> b->elements; },
+            [](str_t const& a, str_t const& b) -> std::partial_ordering { return a->bytes <=> b->bytes; }
         }, object, other.object);
-    }
-
-    bool operator>(Object const& other) const {
-        return other.operator<(*this);
-    }
-    bool operator<=(Object const& other) const {
-        return !operator>(other);
-    }
-    bool operator>=(Object const& other) const {
-        return !operator<(other);
     }
 };
 

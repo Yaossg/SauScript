@@ -10,6 +10,24 @@ Operand ScriptEngine::findOperand(const std::string& name) {
     runtime("reference to undefined variable '" + name + "'");
 }
 
+void ScriptEngine::install(const std::string &name, Object const& fn) {
+    if (!global().contains(name)) {
+        global()[name] = fn;
+    } else {
+        switch (auto&& id = global()[name]; id.type()) {
+            case Type::FUNC: {
+                std::vector<Object> overloads{id, fn};
+                id = {std::make_shared<List>(std::move(overloads))};
+            } break;
+            case Type::LIST:
+                get<list_t>(id.object)->mut().push_back(fn);
+                break;
+            default:
+                runtime("attempt to install external function for a incompatible name");
+        }
+    }
+}
+
 std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level = Operators::LEVEL_ROOT) {
     switch (Operator const* op; level) {
         case Operators::LEVEL_PRIMARY:
@@ -179,29 +197,15 @@ std::unique_ptr<ExprNode> ScriptEngine::compileWhile(Token*& current) {
 
 std::unique_ptr<ExprNode> ScriptEngine::compileFor(Token*& current) {
     SourceLocation location = (--current)->location;
-    auto init = compileExpression(++current);
-    if (*current == Token::punctuator(":")) {
-        if (auto* ref = dynamic_cast<RefNode*>(init.get())) {
-            auto iter = compileExpression(++current);
-            if (*current != Token::braceLeft()) syntax("missing '{' in for", current->location);
-            auto stmt = compileStatements(++current);
-            if (*current != Token::braceRight()) syntax("missing '}' in for", current->location);
-            ++current;
-            return std::make_unique<ForEachNode>(this, location, ref->name, std::move(iter), std::move(stmt));
-        } else {
-            syntax("expected id-expression in for-each", location);
-        }
-    }
-    if (current->type != TokenType::LINEBREAK) syntax("missing first linebreak in for", current->location);
-    auto cond = compileExpression(++current);
-    if (current->type != TokenType::LINEBREAK) syntax("missing second linebreak in for", current->location);
+    if ((++current)->type != TokenType::IDENTIFIER) syntax("expected for identifier", current->location);
+    std::string name = current->identifier();
+    if (*++current != Token::punctuator(":")) syntax("expected ':' in for", current->location);
     auto iter = compileExpression(++current);
-    while (current->type == TokenType::LINEBREAK) ++current;
     if (*current != Token::braceLeft()) syntax("missing '{' in for", current->location);
     auto stmt = compileStatements(++current);
     if (*current != Token::braceRight()) syntax("missing '}' in for", current->location);
     ++current;
-    return std::make_unique<ForNode>(this, location, std::move(init), std::move(cond), std::move(iter), std::move(stmt));
+    return std::make_unique<ForNode>(this, location, name, std::move(iter), std::move(stmt));
 }
 
 std::unique_ptr<ExprNode> ScriptEngine::compileIfElse(Token*& current) {
@@ -212,7 +216,8 @@ std::unique_ptr<ExprNode> ScriptEngine::compileIfElse(Token*& current) {
     auto then = compileStatements(++current);
     if (*current != Token::braceRight()) syntax("missing '}' in if", current->location);
     std::unique_ptr<ExprNode> else_ = std::make_unique<StmtsNode>(this, current->location, std::vector<std::unique_ptr<ExprNode>>());
-    while ((++current)->type == TokenType::LINEBREAK);
+    bool skipped = false;
+    while ((++current)->type == TokenType::LINEBREAK) skipped = true;
     if (*current == Token::keyword(Keyword::ELSE)) {
         while ((++current)->type == TokenType::LINEBREAK);
         if (*current == Token::keyword(Keyword::IF)) {
@@ -223,6 +228,8 @@ std::unique_ptr<ExprNode> ScriptEngine::compileIfElse(Token*& current) {
             if (*current != Token::braceRight()) syntax("missing '}' in else", current->location);
             ++current;
         }
+    } else if (skipped) {
+        --current;
     }
     return std::make_unique<IfElseNode>(this, location, std::move(cond), std::move(then), std::move(else_));
 }
@@ -234,8 +241,8 @@ std::unique_ptr<ExprNode> ScriptEngine::compileTryCatch(Token*& current) {
     auto try_ = compileStatements(++current);
     if (*current != Token::braceRight()) syntax("missing '}' in try", current->location);
     while ((++current)->type == TokenType::LINEBREAK);
-    if (*current != Token::keyword(Keyword::CATCH)) syntax("missing catch in try", current->location);
-    if ((++current)->type != TokenType::IDENTIFIER) syntax("missing catch identifier", current->location);
+    if (*current != Token::keyword(Keyword::CATCH)) syntax("expected catch in try", current->location);
+    if ((++current)->type != TokenType::IDENTIFIER) syntax("expected catch identifier", current->location);
     auto name = current->identifier();
     while ((++current)->type == TokenType::LINEBREAK);
     if (*current != Token::braceLeft()) syntax("missing '{' in catch", current->location);
@@ -306,9 +313,6 @@ Object ScriptEngine::eval(std::string const& script) {
         compile(script)->push_unscoped();
         Object ret;
         switch (jumpTarget) {
-            case JumpTarget::THROW:
-                fprintf(stderr, "Unhandled exception: %s", yield.toString(StringifyScheme::DUMP).c_str());
-                break;
             case JumpTarget::BREAK:
                 runtime("Wild break jump", jumpFrom);
             case JumpTarget::CONTINUE:
@@ -320,19 +324,14 @@ Object ScriptEngine::eval(std::string const& script) {
                 ret = pop().val();
                 break;
         }
+        jumpTarget = JumpTarget::NONE;
         return ret;
     } catch (Error& e) {
-        fprintf(stderr, "%s\n", e.what());
+        fprintf(err, "%s\n", e.what());
     } catch (RawError& e) {
-        fprintf(stderr, "Fatal compiler internal error occurred, message reported: %s", e.message.c_str());
+        fprintf(err, "Fatal compiler internal error occurred, message reported: %s", e.message.c_str());
     }
-    if (!stack.empty()) {
-        fprintf(stderr, "Memory leaked: %d\n", stack.size());
-        while (!stack.empty()) {
-            fprintf(stderr, "Remains: %s\n", stack.top().val().toString(StringifyScheme::DUMP).c_str());
-            stack.pop();
-        }
-    }
+    if (pushed) impossible();
     jumpTarget = JumpTarget::NONE;
     return {};
 }

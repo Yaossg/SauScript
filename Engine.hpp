@@ -10,19 +10,14 @@
 
 namespace SauScript {
 
-template<typename R, typename... Args>
-std::function<func_t(ScriptEngine *)> external(std::function<R(Args...)> function);
-
-void initEnv(ScriptEngine *list);
-
 enum class JumpTarget {
-    NONE, CONTINUE, BREAK, RETURN, THROW
+    NONE, CONTINUE, BREAK, RETURN
 };
 
 struct ScriptEngine {
     using Scope = std::map<std::string, Object>;
     std::deque<Scope> scopes{{}, {}};
-    FILE *out, *in;
+    FILE *out, *in, *err;
     JumpTarget jumpTarget = JumpTarget::NONE;
     SourceLocation jumpFrom;
     Object yield;
@@ -32,21 +27,30 @@ struct ScriptEngine {
         this->yield = std::move(yield);
     }
 
-    std::stack<Operand> stack;
-    void push(Operand const &operand) { stack.push(operand); }
-    [[nodiscard]] Operand& top() { return stack.top(); }
-    Operand pop() { auto operand = top(); stack.pop(); return operand; }
+    Operand peek; bool pushed = false;
+    void push(Operand const& operand) {
+        if (pushed) impossible();
+        peek = operand; pushed = true;
+    }
+    [[nodiscard]] Operand const& top() const { if (!pushed) impossible(); return peek; }
+    Operand pop() { if (!pushed) impossible(); pushed = false; return peek; }
 
-    ScriptEngine(FILE *out = stdout, FILE *in = stdin) : out(out), in(in) {
-        initEnv(this);
+    void initEnv();
+    ScriptEngine(FILE *out = stdout, FILE *in = stdin, FILE *err = stderr) : out(out), in(in), err(err) {
+        initEnv();
     }
 
     Scope &global() { return scopes.front(); }
 
     Scope &local() { return scopes.back(); }
 
+    void install(std::string const &name, Object const& fn);
+    template<typename R, typename... Args>
+    func_t external(std::function<R(Args...)> function);
     template<typename Fn>
-    void installExternalFunction(std::string const &name, Fn fn);
+    void install(std::string const &name, Fn fn) {
+        install(name, {external(std::function{fn})});
+    }
 
     Operand findOperand(std::string const &name);
 
@@ -71,32 +75,10 @@ struct ScriptScope {
     }
 
     ~ScriptScope() {
-        if (engine->jumpTarget == JumpTarget::NONE && std::uncaught_exceptions() == 0)
+        if (engine->jumpTarget == JumpTarget::NONE && std::uncaught_exceptions() == 0 && engine->pushed)
             engine->push(engine->pop().val());
         engine->scopes.pop_back();
     }
 };
-
-template<typename Fn>
-void ScriptEngine::installExternalFunction(const std::string &name, Fn fn) {
-    Object wrapped{external(std::function{fn})(this)};
-    if (!global().contains(name)) {
-        global()[name] = wrapped;
-    } else {
-        switch (global()[name].type()) {
-            case Type::FUNC: {
-                std::vector<Object> overloads{global()[name], wrapped};
-                global()[name] = {std::make_shared<List>(std::move(overloads))};
-            } break;
-            case Type::LIST:
-                get<list_t>(global()[name].object)->mut().push_back(wrapped);
-                break;
-            default:
-                runtime("Assertion failed");
-        }
-    }
-}
-
-
 
 }
