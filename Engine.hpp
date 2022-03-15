@@ -1,7 +1,6 @@
 #pragma once
 
 #include <functional>
-#include <map>
 #include <deque>
 #include <stack>
 #include <utility>
@@ -15,7 +14,7 @@ enum class JumpTarget {
 };
 
 struct ScriptEngine {
-    using Scope = std::map<std::string, Object>;
+    using Scope = std::unordered_map<std::string, Object>;
     std::deque<Scope> scopes{{}, {}};
     FILE *out, *in, *err;
     JumpTarget jumpTarget = JumpTarget::NONE;
@@ -40,9 +39,8 @@ struct ScriptEngine {
         initEnv();
     }
 
-    Scope &global() { return scopes.front(); }
-
-    Scope &local() { return scopes.back(); }
+    Scope& global() { return scopes.front(); }
+    Scope& local() { return scopes.back(); }
 
     void install(std::string const &name, Object const& fn);
     template<typename R, typename... Args>

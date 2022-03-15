@@ -13,6 +13,7 @@ void ScriptEngine::initEnv() {
     install("eval",     [this](str_t script) { return eval(script->bytes); });
     install("repr",     [](Object object) { return std::make_shared<String>(object.toString(StringifyScheme::DUMP)); });
     install("toString", [](Object object) { return std::make_shared<String>(object.toString(StringifyScheme::RUNTIME)); });
+    install("hashCode", [](Object object) { return object.hashCode(); });
     install("typeid",   [](Object object) { return (int_t) object.type(); });
     install("typename", [](Object object) { return std::make_shared<String>(object.type_name()); });
     install("int",      [](int_t x) { return x; });
@@ -22,6 +23,20 @@ void ScriptEngine::initEnv() {
     install("isASCII",  [](int_t x) { return char32_t(x) == x && Unicode::isASCII(x); });
     install("isUnicode",[](int_t x) { return char32_t(x) == x && Unicode::isUnicode(x); });
     install("apply",    [this](Object func, list_t args) { return func.invoke(this, args->elements); });
+    install("global",   [this] {
+        std::unordered_map<Object, Object> elements;
+        for (auto&& [key, value] : global()) {
+            elements[{std::make_shared<String>(key)}] = value;
+        }
+        return std::make_shared<Dictionary>(elements);
+    });
+    install("local",   [this] {
+        std::unordered_map<Object, Object> elements;
+        for (auto&& [key, value] : scopes[scopes.size() - 2]) {
+            elements[{std::make_shared<String>(key)}] = value;
+        }
+        return std::make_shared<Dictionary>(elements);
+    });
     // io
     install("flush",    [this] { std::fflush(out); });
     install("output",   [this](str_t file) {
@@ -70,6 +85,7 @@ void ScriptEngine::initEnv() {
     install("clear",    [](list_t list) { list->mut().clear(); });
     install("concat",   [](list_t list1, list_t list2) {
         std::vector<Object> result;
+        result.reserve(list1->elements.size() + list2->elements.size());
         for (auto &&obj: list1->elements) {
             result.push_back(obj);
         }
@@ -125,6 +141,7 @@ void ScriptEngine::initEnv() {
     });
     install("iota",     [](int_t size) {
         std::vector<Object> result;
+        result.reserve(size);
         for (int_t i = 0; i < size; ++i) {
             result.push_back({i});
         }
@@ -135,6 +152,7 @@ void ScriptEngine::initEnv() {
     });
     install("map", [this](list_t list, func_t mapper) {
         std::vector<Object> result;
+        result.reserve(list->elements.size());
         for (auto &&obj: list->elements) {
             result.push_back(mapper->invoke(this, {obj}));
         }
@@ -142,6 +160,7 @@ void ScriptEngine::initEnv() {
     });
     install("filter", [this](list_t list, func_t filter) {
         std::vector<Object> result;
+        result.reserve(list->elements.size());
         for (auto &&obj: list->elements) {
             if (filter->invoke(this, {obj}).asBool())
                 result.push_back(obj);
@@ -154,9 +173,7 @@ void ScriptEngine::initEnv() {
         bool first = true;
         for (auto &&obj: list->elements) {
             if (first) { first = false; }
-            else {
-                init = acc->invoke(this, {init, obj});
-            }
+            else { init = acc->invoke(this, {init, obj}); }
         }
         return init;
     });
@@ -205,60 +222,83 @@ void ScriptEngine::initEnv() {
     install("str",      [](int_t size, int_t ch) {
         return std::make_shared<String>(Unicode::encodeUnicode(std::u32string(size, char32_t(ch))));
     });
+    // dict
+    install("copy",     [](dict_t dict) { return std::make_shared<Dictionary>(dict->elements); });
+    install("empty",    [](dict_t dict) { return (int_t) dict->elements.empty(); });
+    install("size",     [](dict_t dict) { return (int_t) dict->elements.size(); });
+    install("put",      [](dict_t dict, Object key, Object value) { dict->mut()[key] = value; });
+    install("clear",    [](dict_t dict) { dict->mut().clear(); });
+    install("contains", [](dict_t dict, Object key) { return (int_t)dict->elements.contains(key); });
+    install("keys",     [](dict_t dict) {
+        std::vector<Object> result;
+        result.reserve(dict->elements.size());
+        for (auto&& [key, value] : dict->elements) {
+            result.push_back(key);
+        }
+        return std::make_shared<List>(std::move(result));
+    });
+    install("values",   [](dict_t dict) {
+        std::vector<Object> result;
+        result.reserve(dict->elements.size());
+        for (auto&& [key, value] : dict->elements) {
+            result.push_back(value);
+        }
+        return std::make_shared<List>(std::move(result));
+    });
     // math
-    install("ceil", ::ceil);
-    install("floor", ::floor);
-    install("trunc", ::trunc);
-    install("round", ::llround);
-    install("abs", ::llabs);
-    install("abs", ::fabs);
-    install("fmod", ::fmod);
-    install("remainder", ::remainder);
-    install("fma", ::fma);
-    install("min", [](int_t a, int_t b) { return a < b ? a : b; });
-    install("max", [](int_t a, int_t b) { return a > b ? a : b; });
-    install("min", ::fmin);
-    install("max", ::fmax);
-    install("exp", ::exp);
-    install("exp2", ::exp2);
-    install("expm1", ::expm1);
-    install("log", ::log);
-    install("log2", ::log2);
-    install("log10", ::log10);
-    install("log1p", ::log1p);
-    install("pow", ::pow);
-    install("sqrt", ::sqrt);
-    install("cbrt", ::cbrt);
-    install("hypot", ::hypot);
-    install("hypot", (real_t(*)(real_t, real_t, real_t)) std::hypot);
-    install("sin", ::sin);
-    install("cos", ::cos);
-    install("tan", ::tan);
-    install("asin", ::asin);
-    install("acos", ::acos);
-    install("atan", ::atan);
-    install("atan2", ::atan2);
-    install("sinh", ::sinh);
-    install("cosh", ::cosh);
-    install("tanh", ::tanh);
-    install("asinh", ::asinh);
-    install("acosh", ::acosh);
-    install("atanh", ::atanh);
-    install("erf", ::erf);
-    install("erfc", ::erfc);
-    install("tgamma", ::tgamma);
-    install("lgamma", ::lgamma);
-    install("beta", std::beta<real_t, real_t>);
-    install("gcd", std::gcd<int_t, int_t>);
-    install("lcm", std::lcm<int_t, int_t>);
+    install("ceil",     ::ceil);
+    install("floor",    ::floor);
+    install("trunc",    ::trunc);
+    install("round",    ::llround);
+    install("abs",      ::llabs);
+    install("abs",      ::fabs);
+    install("fmod",     ::fmod);
+    install("remainder",::remainder);
+    install("fma",      ::fma);
+    install("min",      [](int_t a, int_t b) { return a < b ? a : b; });
+    install("max",      [](int_t a, int_t b) { return a > b ? a : b; });
+    install("min",      ::fmin);
+    install("max",      ::fmax);
+    install("exp",      ::exp);
+    install("exp2",     ::exp2);
+    install("expm1",    ::expm1);
+    install("log",      ::log);
+    install("log2",     ::log2);
+    install("log10",    ::log10);
+    install("log1p",    ::log1p);
+    install("pow",      ::pow);
+    install("sqrt",     ::sqrt);
+    install("cbrt",     ::cbrt);
+    install("hypot",    ::hypot);
+    install("hypot",    (real_t(*)(real_t, real_t, real_t)) std::hypot);
+    install("sin",      ::sin);
+    install("cos",      ::cos);
+    install("tan",      ::tan);
+    install("asin",     ::asin);
+    install("acos",     ::acos);
+    install("atan",     ::atan);
+    install("atan2",    ::atan2);
+    install("sinh",     ::sinh);
+    install("cosh",     ::cosh);
+    install("tanh",     ::tanh);
+    install("asinh",    ::asinh);
+    install("acosh",    ::acosh);
+    install("atanh",    ::atanh);
+    install("erf",      ::erf);
+    install("erfc",     ::erfc);
+    install("tgamma",   ::tgamma);
+    install("lgamma",   ::lgamma);
+    install("beta",     std::beta<real_t, real_t>);
+    install("gcd",      std::gcd<int_t, int_t>);
+    install("lcm",      std::lcm<int_t, int_t>);
     install("midpoint", (int_t(*)(int_t, int_t)) std::midpoint);
     install("midpoint", (real_t(*)(real_t, real_t)) std::midpoint);
-    install("lerp", (real_t(*)(real_t, real_t, real_t)) std::lerp);
+    install("lerp",     (real_t(*)(real_t, real_t, real_t)) std::lerp);
     // chrono
-    install("nanos", [] { return std::chrono::system_clock::now().time_since_epoch().count(); });
-    install("micros", [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000LL; });
-    install("millis", [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000'000LL; });
-    install("seconds", [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000'000'000LL; });
+    install("nanos",    [] { return std::chrono::system_clock::now().time_since_epoch().count(); });
+    install("micros",   [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000LL; });
+    install("millis",   [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000'000LL; });
+    install("seconds",  [] { return std::chrono::system_clock::now().time_since_epoch().count() / 1'000'000'000LL; });
     // constants
     {
         using namespace std::numbers;

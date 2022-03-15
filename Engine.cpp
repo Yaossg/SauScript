@@ -79,13 +79,33 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
                         ++current;
                         return expr;
                     }
+                case TokenType::PUNCTUATOR:
+                    if (token == Token::punctuator("@") && *current == Token::bracketLeft()) {
+                        ++current;
+                        std::vector<std::pair<std::unique_ptr<ExprNode>, std::unique_ptr<ExprNode>>> elements;
+                        while (true) {
+                            while (current->type == TokenType::LINEBREAK) ++current;
+                            if (*current == Token::bracketRight()) break;
+                            auto key = compileExpression(current);
+                            while (current->type == TokenType::LINEBREAK) ++current;
+                            if (*current != Token::punctuator(":"))
+                                syntax("':' is expected after a key", current->location);
+                            while ((++current)->type == TokenType::LINEBREAK);
+                            auto value = compileExpression(current);
+                            elements.emplace_back(std::move(key), std::move(value));
+                            while (current->type == TokenType::LINEBREAK) ++current;
+                            if (*current == Token::bracketRight()) break;
+                            if (*current++ != Token::punctuator(","))
+                                syntax("unexpected token interrupt series of expressions", (--current)->location);
+                        }
+                        ++current;
+                        return std::make_unique<DictLiteralNode>(this, token.location, std::move(elements));
+                    }
+                    syntax("unexpected punctuator", token.location);
                 case TokenType::LINEBREAK:
                     syntax("unexpected linebreak", token.location);
                 case TokenType::TERMINATOR:
                     syntax("unexpected terminator", token.location);
-                case TokenType::PUNCTUATOR:
-                    syntax("unexpected punctuator", token.location);
-
             }
         case Operators::LEVEL_PREFIX: {
             if (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {

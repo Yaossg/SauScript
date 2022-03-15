@@ -33,6 +33,7 @@ void file() {
     fclose(file_input);
     fclose(file_output);
     printf("Program finished and returned %s\n", ret.toString(SauScript::StringifyScheme::DUMP).c_str());
+    fflush(stdout);
 }
 
 [[noreturn]] void repl() {
@@ -41,15 +42,17 @@ void file() {
     while (true) {
         char line[1024];
         printf(">>>");
+        fflush(stdout);
         fgets(line, sizeof line, stdin);
         SauScript::Object ret = engine.eval(line);
-        if (ret.type() != SauScript::Type::VOID)
+        if (ret.type() != SauScript::Type::VOID) {
             printf("%s\n", ret.toString(SauScript::StringifyScheme::DUMP).c_str());
-
+            fflush(stdout);
+        }
     }
 }
 
 int main() {
-    file();
-    //repl();
+    //file();
+    repl();
 }

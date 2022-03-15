@@ -47,7 +47,8 @@ private:
 
 struct ValNode : ExprNode {
     Object val;
-    ValNode(ScriptEngine* engine, SourceLocation location, Object val): ExprNode(val.toString(StringifyScheme::TREE_NODE), engine, location), val(std::move(val)) {}
+    ValNode(ScriptEngine* engine, SourceLocation location, Object val)
+        : ExprNode(val.toString(StringifyScheme::TREE_NODE), engine, location), val(std::move(val)) {}
 
     void do_push() const override {
         engine->push(val);
@@ -68,7 +69,8 @@ struct ValNode : ExprNode {
 
 struct RefNode : ExprNode {
     std::string name;
-    RefNode(ScriptEngine* engine, SourceLocation location, std::string name): ExprNode(name, engine, location), name(std::move(name)) {}
+    RefNode(ScriptEngine* engine, SourceLocation location, std::string name)
+        : ExprNode(name, engine, location), name(std::move(name)) {}
 
     void do_push() const override {
         engine->push(engine->findOperand(name));
@@ -153,32 +155,27 @@ struct OpTernaryNode : ExprNode {
 };
 
 struct OpIndexNode : ExprNode {
-    std::unique_ptr<ExprNode> list;
+    std::unique_ptr<ExprNode> object;
     std::unique_ptr<ExprNode> index;
     OpIndexNode(ScriptEngine* engine, SourceLocation location,
-                std::unique_ptr<ExprNode> list,
+                std::unique_ptr<ExprNode> object,
                 std::unique_ptr<ExprNode> index): ExprNode("[]", engine, location),
-                list(std::move(list)), index(std::move(index)) {}
+                object(std::move(object)), index(std::move(index)) {}
 
     void do_push() const override {
-        if (list->push()) return;
-        auto t = engine->pop();
-        auto a = std::get<list_t>(t.val().object);
+        if (object->push()) return;
+        auto object = engine->pop();
         if (index->push()) return;
-        auto b = engine->pop().val().asInt();
-        if (b < 0 || b >= a->elements.size()) runtime("list index access out of bound", location);
-        if (t.val_or_ref.index() && !a->mutLock)
-            engine->push(&a->mut().at(b));
-        else
-            engine->push(a->elements.at(b));
+        auto index = engine->pop().val();
+        engine->push(object.val().member(index, object.val_or_ref.index() && !object.val().isMutLocked()));
     }
 
     [[nodiscard]] std::vector<ExprNode*> children() const override {
-        return {list.get(), index.get()};
+        return {object.get(), index.get()};
     }
 
     [[nodiscard]] std::string dump() const override {
-        return "(" + list->dump() + ")[" + index->dump() + "]";
+        return "(" + object->dump() + ")[" + index->dump() + "]";
     }
 };
 
@@ -258,6 +255,48 @@ struct ListLiteralNode : ExprNode {
         for (auto&& element : elements) {
             if (first) { first = false; } else { ret += ", "; }
             ret += element->dump();
+        }
+        ret += "]";
+        return ret;
+    }
+};
+
+
+struct DictLiteralNode : ExprNode {
+    std::vector<std::pair<std::unique_ptr<ExprNode>, std::unique_ptr<ExprNode>>> elements;
+    DictLiteralNode(ScriptEngine* engine, SourceLocation location,
+                    std::vector<std::pair<std::unique_ptr<ExprNode>, std::unique_ptr<ExprNode>>> elements): ExprNode("@[]", engine, location),
+                    elements(std::move(elements)) {}
+
+    void do_push() const override {
+        std::unordered_map<Object, Object> objects;
+        for (auto&& [key, value] : elements) {
+            if (key->push()) return;
+            auto key_ = engine->pop().val();
+            if (value->push()) return;
+            auto value_ = engine->pop().val();
+            objects[key_] = value_;
+        }
+        engine->push(Object{std::make_shared<Dictionary>(std::move(objects))});
+    }
+
+    [[nodiscard]] std::vector<ExprNode*> children() const override {
+        std::vector<ExprNode*> ret;
+        for (auto&& [key, value] : elements) {
+            ret.push_back(key.get());
+            ret.push_back(value.get());
+        }
+        return ret;
+    }
+
+    [[nodiscard]] std::string dump() const override {
+        std::string ret = "@[";
+        bool first = true;
+        for (auto&& [key, value] : elements) {
+            if (first) { first = false; } else { ret += ", "; }
+            ret += key->dump();
+            ret += ": ";
+            ret += value->dump();
         }
         ret += "]";
         return ret;

@@ -110,7 +110,7 @@ Token SourceCode::parseNumber() {
             ? Token::literal_real(std::stod((base == 10 ? "" : "0x") + number))
             : Token::literal_int(int_t(std::stoull(number, nullptr, base)));
     } catch (std::out_of_range&) {
-        syntax("number literal overflow", location());
+        syntax("number literal overflowed", location());
     }
 }
 

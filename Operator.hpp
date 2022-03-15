@@ -37,7 +37,7 @@ static thread_local std::vector<std::string_view> TOKENS;
 
 inline std::vector<std::string_view> const& tokens() {
     if (TOKENS.empty()) {
-        TOKENS = {"?", ":", ",", "."};
+        TOKENS = {"?", ":", ",", ".", "@"};
         for (auto&& ops : OPERATORS) {
             for (auto&& op : ops) {
                 TOKENS.push_back(op.literal);

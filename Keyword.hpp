@@ -1,6 +1,6 @@
 #pragma once
 
-#include <map>
+#include <unordered_map>
 
 namespace SauScript {
 
@@ -8,7 +8,7 @@ enum class Keyword {
     WHILE, IF, ELSE, TRY, CATCH, FOR, FN
 };
 
-inline std::map<std::string, Keyword> KEYWORDS{
+inline std::unordered_map<std::string, Keyword> KEYWORDS{
         {"while",   Keyword::WHILE  },
         {"if",      Keyword::IF     },
         {"else",    Keyword::ELSE   },

@@ -114,7 +114,84 @@ std::string Object::toString(StringifyScheme scheme) const {
             [](real_t x) { return SauScript::toString(x); },
             [scheme](func_t const& ptr) { return scheme == StringifyScheme::TREE_NODE ? ptr->descriptor() : ptr->toString(); },
             [](list_t const& ptr) { return ptr->toString(StringifyScheme::DUMP); },
-            [scheme](str_t const& ptr) { return scheme == StringifyScheme::RUNTIME ? ptr->bytes : Unicode::quote(ptr->bytes); }
+            [scheme](str_t const& ptr) { return scheme == StringifyScheme::RUNTIME ? ptr->bytes : Unicode::quote(ptr->bytes); },
+            [](dict_t const& ptr) { return ptr->toString(StringifyScheme::DUMP); },
+    }, object);
+}
+
+int_t Object::hashCode() const {
+    return std::visit(overloaded {
+            [](std::monostate) { return 0LL; },
+            [](int_t x) { return x; },
+            [](real_t x) { return *(int_t*)&x; },
+            [](func_t const& ptr) { return (int_t)ptr.get(); },
+            [](list_t const& ptr) { return ptr->hashCode(); },
+            [](str_t const& ptr) { return int_t(std::hash<std::string>{}(ptr->bytes)); },
+            [](dict_t const& ptr) { return ptr->hashCode(); }
+    }, object);
+}
+
+bool Object::operator==(const Object &other) const {
+    return std::visit(overloaded {
+            [](auto const& a, auto const& b) { return false; },
+            [](std::monostate, std::monostate) { return true; },
+            [](int_t a, int_t b) { return a == b; },
+            [](real_t a, real_t b) { return a == b; },
+            [](int_t a, real_t b) { return a == b; },
+            [](real_t a, int_t b) { return a == b; },
+            [](func_t const& a, func_t const& b) { return a.get() == b.get(); },
+            [](list_t const& a, list_t const& b) { return a->elements == b->elements; },
+            [](str_t const& a, str_t const& b) { return a->bytes == b->bytes; },
+            [](dict_t const& a, dict_t const& b) { return a->elements == b->elements; }
+    }, object, other.object);
+}
+
+std::partial_ordering Object::operator<=>(const Object &other) const {
+    return std::visit(overloaded {
+            [](auto const& a, auto const& b) { return std::partial_ordering::unordered; },
+            [](std::monostate, std::monostate) { return std::partial_ordering::equivalent; },
+            [](int_t a, int_t b) -> std::partial_ordering { return a <=> b; },
+            [](real_t a, real_t b) { return a <=> b; },
+            [](int_t a, real_t b) { return a <=> b; },
+            [](real_t a, int_t b) { return a <=> b; },
+            [](list_t const& a, list_t const& b) { return a->elements <=> b->elements; },
+            [](str_t const& a, str_t const& b) -> std::partial_ordering { return a->bytes <=> b->bytes; }
+    }, object, other.object);
+}
+
+list_t Object::asIterable() const {
+    if (type() != Type::LIST) runtime("not iterable");
+    return std::get<list_t>(object);
+}
+
+bool Object::isMutLocked() const {
+    return std::visit(overloaded {
+            [](auto const&) { return false; },
+            [](list_t const& ptr) { return ptr->mutLock; },
+            [](dict_t const& ptr) { return ptr->mutLock; }
+    }, object);
+}
+
+bool Object::isToStringLocked() const {
+    return std::visit(overloaded {
+        [](auto const&) { return false; },
+        [](list_t const& ptr) { return ptr->toStringLock; },
+        [](dict_t const& ptr) { return ptr->toStringLock; }
+    }, object);
+}
+
+Operand Object::member(Object const& index, bool mut) const {
+    return std::visit(overloaded {
+            [this](auto const&) -> Operand { runtime("member access is unsupported for " + type_name()); },
+            [&index, mut](list_t const& ptr) -> Operand {
+                auto index_ = index.asInt();
+                if (index_ < 0 || index_ >= ptr->elements.size()) runtime("list index access out of bound");
+                if (mut) return &ptr->mut()[index_]; else return ptr->elements[index_];
+            },
+            [&index, mut](dict_t const& ptr) -> Operand {
+                if (!ptr->elements.contains(index)) runtime("dict index access out of bound");
+                if (mut) return &ptr->mut().at(index); else return ptr->elements.at(index);
+            }
     }, object);
 }
 
@@ -124,11 +201,45 @@ std::string List::toString(StringifyScheme scheme) const {
     std::string ret = "[";
     for (auto&& obj : elements) {
         if (first) { first = false; } else { ret += ", "; }
-        if (obj.type() == Type::LIST && get<list_t>(obj.object)->toStringLock)
-            runtime("recursive list cannot be serialized");
+        if (obj.isToStringLocked())
+            runtime("recursive object cannot be serialized");
         ret += obj.toString(scheme);
     }
     return ret + "]";
 }
 
+int_t List::hashCode() const {
+    int_t ret = 0;
+    for (auto&& element : elements) {
+        ret <<= 1;
+        ret ^= element.hashCode();
+    }
+    return ret;
+}
+
+std::string Dictionary::toString(StringifyScheme scheme) const {
+    ToStringLockGuard guard(this);
+    bool first = true;
+    std::string ret = "@[";
+    for (auto&& [key, value] : elements) {
+        if (first) { first = false; } else { ret += ", "; }
+        if (key.isToStringLocked() || value.isToStringLocked())
+            runtime("recursive object cannot be serialized");
+        ret += key.toString(scheme);
+        ret += ": ";
+        ret += value.toString(scheme);
+    }
+    return ret + "]";
+}
+
+int_t Dictionary::hashCode() const {
+    int_t ret = 0;
+    for (auto&& [key, value] : elements) {
+        ret <<= 1;
+        ret ^= key.hashCode();
+        ret <<= 1;
+        ret ^= value.hashCode();
+    }
+    return ret;
+}
 }

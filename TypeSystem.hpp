@@ -3,7 +3,7 @@
 #include <vector>
 #include <memory>
 #include <variant>
-#include <map>
+#include <unordered_map>
 
 #include "Diagnostics.hpp"
 
@@ -16,21 +16,25 @@ struct overloaded : Ts... {
 };
 
 enum class Type {
-    VOID, INT, REAL, FUNC, LIST, STR,
+    VOID, INT, REAL, FUNC, LIST, STR, DICT,
     ANY // as parameter or return type
 };
 
-inline std::map<std::string, Type> TYPES{
+inline std::unordered_map<std::string, Type> TYPES{
         {"void",    Type::VOID  },
         {"int",     Type::INT   },
         {"real",    Type::REAL  },
         {"func",    Type::FUNC  },
         {"list",    Type::LIST  },
         {"str",     Type::STR   },
+        {"dict",    Type::DICT  },
         {"any",     Type::ANY   }
 };
 
-static std::string TYPE_NAMES[] = {"void", "int", "real", "func", "list", "str", "any"};
+static std::string TYPE_NAMES[] = {"void", "int", "real", "func", "list", "str", "dict", "any"};
+
+using int_t = long long;
+using real_t = double;
 
 inline std::string nameOf(Type type) {
     return TYPE_NAMES[(size_t) type];
@@ -63,29 +67,7 @@ struct Function {
     Object invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
 };
 
-struct List {
-    const std::vector<Object> elements;
-    explicit List(std::vector<Object> elements): elements(std::move(elements)) {}
-
-    mutable bool mutLock = false;
-    struct MutLockGuard {
-        List const* owner;
-        explicit MutLockGuard(List const* owner): owner(owner) { owner->mutLock = true; }
-        ~MutLockGuard() { owner->mutLock = false; }
-    };
-    std::vector<Object>& mut() {
-        if (mutLock) runtime("attempt to modify a list locked in mutability");
-        return const_cast<std::vector<Object>&>(elements);
-    }
-    mutable bool toStringLock = false;
-    struct ToStringLockGuard {
-        List const* owner;
-        explicit ToStringLockGuard(List const* owner): owner(owner) { owner->toStringLock = true; }
-        ~ToStringLockGuard() { owner->toStringLock = false; }
-    };
-    [[nodiscard]] std::string toString(StringifyScheme scheme) const;
-    Object invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
-};
+struct List;
 
 struct String {
     const std::string bytes;
@@ -93,11 +75,12 @@ struct String {
     explicit String(std::string bytes): bytes(std::move(bytes)) {}
 };
 
-using int_t = long long;
-using real_t = double;
+struct Dictionary;
+
 using func_t = std::shared_ptr<Function>;
 using list_t = std::shared_ptr<List>;
 using str_t = std::shared_ptr<String>;
+using dict_t = std::shared_ptr<Dictionary>;
 
 template<typename T>
 constexpr Type parseType() {
@@ -113,13 +96,15 @@ constexpr Type parseType() {
         return Type::LIST;
     } else if constexpr(std::is_same_v<T, str_t>) {
         return Type::STR;
+    } else if constexpr(std::is_same_v<T, dict_t>) {
+        return Type::DICT;
     } else if constexpr(std::is_same_v<T, Object>) {
         return Type::ANY;
     }
 }
 
 struct Object {
-    std::variant<std::monostate, int_t, real_t, func_t, list_t, str_t> object;
+    std::variant<std::monostate, int_t, real_t, func_t, list_t, str_t, dict_t> object;
 
     [[nodiscard]] Type type() const {
         return (Type) object.index();
@@ -170,19 +155,6 @@ struct Object {
         runtime("attempt to implicitly cast from " + type_name() + " to " + nameOf(type));
     }
 
-    Object invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
-
-    [[nodiscard]] list_t asIterable() const {
-        if (type() != Type::LIST) runtime("not iterable");
-        return std::get<list_t>(object);
-    }
-
-    void yield(std::vector<Object>& yield) const {
-        if (type() != Type::VOID) yield.push_back(*this);
-    }
-
-    [[nodiscard]] std::string toString(StringifyScheme scheme) const;
-
     template<typename T>
     [[nodiscard]] T as() const {
         if constexpr(std::is_same_v<T, Object>) {
@@ -192,32 +164,78 @@ struct Object {
         }
     }
 
-    bool operator==(Object const& other) const {
-        return std::visit(overloaded {
-            [](auto a, auto b) { return false; },
-            [](std::monostate, std::monostate) { return true; },
-            [](int_t a, int_t b) { return a == b; },
-            [](real_t a, real_t b) { return a == b; },
-            [](int_t a, real_t b) { return a == b; },
-            [](real_t a, int_t b) { return a == b; },
-            [](func_t const& a, func_t const& b) { return a.get() == b.get(); },
-            [](list_t const& a, list_t const& b) { return a->elements == b->elements; },
-            [](str_t const& a, str_t const& b) { return a->bytes == b->bytes; }
-        }, object, other.object);
+    void yield(std::vector<Object>& yield) const {
+        if (type() != Type::VOID) yield.push_back(*this);
     }
 
-    std::partial_ordering operator<=>(Object const& other) const {
-        return std::visit(overloaded {
-            [](auto a, auto b) { return std::partial_ordering::unordered; },
-            [](std::monostate, std::monostate) { return std::partial_ordering::equivalent; },
-            [](int_t a, int_t b) -> std::partial_ordering { return a <=> b; },
-            [](real_t a, real_t b) { return a <=> b; },
-            [](int_t a, real_t b) { return a <=> b; },
-            [](real_t a, int_t b) { return a <=> b; },
-            [](list_t const& a, list_t const& b) { return a->elements <=> b->elements; },
-            [](str_t const& a, str_t const& b) -> std::partial_ordering { return a->bytes <=> b->bytes; }
-        }, object, other.object);
+    [[nodiscard]] bool isMutLocked() const;
+    [[nodiscard]] bool isToStringLocked() const;
+    [[nodiscard]] Operand member(Object const& index, bool mut) const;
+    Object invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
+    [[nodiscard]] list_t asIterable() const;
+    [[nodiscard]] std::string toString(StringifyScheme scheme) const;
+    [[nodiscard]] int_t hashCode() const;
+    bool operator==(Object const& other) const;
+    std::partial_ordering operator<=>(Object const& other) const;
+};
+
+struct List {
+    const std::vector<Object> elements;
+    explicit List(std::vector<Object> elements): elements(std::move(elements)) {}
+
+    mutable bool mutLock = false;
+    struct MutLockGuard {
+        List const* owner;
+        explicit MutLockGuard(List const* owner): owner(owner) { owner->mutLock = true; }
+        ~MutLockGuard() { owner->mutLock = false; }
+    };
+    std::vector<Object>& mut() {
+        if (mutLock) runtime("attempt to modify a list locked in mutability");
+        return const_cast<std::vector<Object>&>(elements);
     }
+    mutable bool toStringLock = false;
+    struct ToStringLockGuard {
+        List const* owner;
+        explicit ToStringLockGuard(List const* owner): owner(owner) { owner->toStringLock = true; }
+        ~ToStringLockGuard() { owner->toStringLock = false; }
+    };
+    [[nodiscard]] std::string toString(StringifyScheme scheme) const;
+    [[nodiscard]] int_t hashCode() const;
+    Object invoke(ScriptEngine* engine, std::vector<Object> const& arguments) const;
+};
+
+}
+
+template<>
+struct std::hash<SauScript::Object> {
+    size_t operator()(SauScript::Object const& rhs) const noexcept {
+        return rhs.hashCode();
+    }
+};
+
+namespace SauScript {
+
+struct Dictionary {
+    const std::unordered_map<Object, Object> elements;
+    explicit Dictionary(std::unordered_map<Object, Object> elements): elements(std::move(elements)) {}
+    mutable bool mutLock = false;
+    struct MutLockGuard {
+        Dictionary const* owner;
+        explicit MutLockGuard(Dictionary const* owner): owner(owner) { owner->mutLock = true; }
+        ~MutLockGuard() { owner->mutLock = false; }
+    };
+    std::unordered_map<Object, Object>& mut() {
+        if (mutLock) runtime("attempt to modify a list locked in mutability");
+        return const_cast<std::unordered_map<Object, Object>&>(elements);
+    }
+    mutable bool toStringLock = false;
+    struct ToStringLockGuard {
+        Dictionary const* owner;
+        explicit ToStringLockGuard(Dictionary const* owner): owner(owner) { owner->toStringLock = true; }
+        ~ToStringLockGuard() { owner->toStringLock = false; }
+    };
+    [[nodiscard]] std::string toString(StringifyScheme scheme) const;
+    [[nodiscard]] int_t hashCode() const;
 };
 
 struct Operand {
