@@ -13,14 +13,6 @@ struct ExprNode {
     SourceLocation location;
     ExprNode(std::string descriptor, ScriptEngine* engine, SourceLocation location)
         : descriptor(std::move(descriptor)), engine(engine), location(location) {}
-
-    bool push() const try {
-        do_push();
-        return engine->jumpTarget != JumpTarget::NONE;
-    } catch (RawError& re) {
-        re.rethrow(location);
-    }
-    virtual void do_push() const = 0;
     [[nodiscard]] virtual std::vector<ExprNode*> children() const { return {}; }
     [[nodiscard]] virtual std::string dump() const { return descriptor; }
 
@@ -50,10 +42,6 @@ struct ValNode : ExprNode {
     ValNode(ScriptEngine* engine, SourceLocation location, Object val)
         : ExprNode(val.toString(StringifyScheme::TREE_NODE), engine, location), val(std::move(val)) {}
 
-    void do_push() const override {
-        engine->push(val);
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         if (val.type() == Type::FUNC) {
             auto&& fn = *get<func_t>(val.object);
@@ -72,10 +60,6 @@ struct RefNode : ExprNode {
     RefNode(ScriptEngine* engine, SourceLocation location, std::string name)
         : ExprNode(name, engine, location), name(std::move(name)) {}
 
-    void do_push() const override {
-        engine->push(engine->findOperand(name));
-    }
-
     void initialize() {
         auto rhs = engine->pop().val();
         if (engine->local().contains(name))
@@ -92,12 +76,6 @@ struct OpUnaryNode : ExprNode {
                 std::unique_ptr<ExprNode> operand,
                 Operator const* op, bool postfix = false): ExprNode(std::string(op->literal), engine, location),
                 operand(std::move(operand)), op(op), postfix(postfix) {}
-
-    void do_push() const override {
-        op->asUnary()(operand.get());
-        if (engine->jumpTarget != JumpTarget::NONE) engine->jumpFrom = location;
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         return {operand.get()};
     }
@@ -118,11 +96,6 @@ struct OpBinaryNode : ExprNode {
                  std::unique_ptr<ExprNode> rhs,
                  Operator const* op): ExprNode(std::string(op->literal), engine, location),
                  lhs(std::move(lhs)), rhs(std::move(rhs)), op(op) {}
-
-    void do_push() const override {
-        op->asBinary()(lhs.get(), rhs.get());
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         return {lhs.get(), rhs.get()};
     }
@@ -139,12 +112,6 @@ struct OpTernaryNode : ExprNode {
                   std::unique_ptr<ExprNode> lhs,
                   std::unique_ptr<ExprNode> rhs): ExprNode("?:", engine, location),
                   cond(std::move(cond)), lhs(std::move(lhs)), rhs(std::move(rhs)) {}
-
-    void do_push() const override {
-        if (cond->push()) return;
-        engine->pop().val().asBool() ? lhs->push() : rhs->push();
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         return {cond.get(), lhs.get(), rhs.get()};
     }
@@ -161,15 +128,6 @@ struct OpIndexNode : ExprNode {
                 std::unique_ptr<ExprNode> object,
                 std::unique_ptr<ExprNode> index): ExprNode("[]", engine, location),
                 object(std::move(object)), index(std::move(index)) {}
-
-    void do_push() const override {
-        if (object->push()) return;
-        auto object = engine->pop();
-        if (index->push()) return;
-        auto index = engine->pop().val();
-        engine->push(object.val().member(index, object.val_or_ref.index() && !object.val().isMutLocked()));
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         return {object.get(), index.get()};
     }
@@ -186,24 +144,6 @@ struct OpInvokeNode : ExprNode {
                  std::unique_ptr<ExprNode> func,
                  std::vector<std::unique_ptr<ExprNode>> args): ExprNode("()", engine, location),
                  func(std::move(func)), args(std::move(args)) {}
-
-    void do_push() const override {
-        std::vector<Object> objects;
-        for (auto&& arg : args) {
-            if (arg->push()) return;
-            objects.push_back(engine->pop().val());
-        }
-        if (func->push()) return;
-        try {
-            engine->push(engine->pop().val().invoke(engine, objects));
-        } catch (Error& e) {
-            e.descriptor += '\n';
-            e.descriptor += "  invoke from here";
-            e.descriptor += location.what();
-            throw;
-        }
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         std::vector<ExprNode*> ret{func.get()};
         for (auto&& arg : args) {
@@ -231,16 +171,6 @@ struct ListLiteralNode : ExprNode {
     ListLiteralNode(ScriptEngine* engine, SourceLocation location,
                     std::vector<std::unique_ptr<ExprNode>> elements): ExprNode("[]", engine, location),
                     elements(std::move(elements)) {}
-
-    void do_push() const override {
-        std::vector<Object> objects;
-        for (auto&& element: elements) {
-            if (element->push()) return;
-            objects.push_back(engine->pop().val());
-        }
-        engine->push(Object{std::make_shared<List>(std::move(objects))});
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         std::vector<ExprNode*> ret;
         for (auto&& element : elements) {
@@ -267,19 +197,6 @@ struct DictLiteralNode : ExprNode {
     DictLiteralNode(ScriptEngine* engine, SourceLocation location,
                     std::vector<std::pair<std::unique_ptr<ExprNode>, std::unique_ptr<ExprNode>>> elements): ExprNode("@[]", engine, location),
                     elements(std::move(elements)) {}
-
-    void do_push() const override {
-        std::unordered_map<Object, Object> objects;
-        for (auto&& [key, value] : elements) {
-            if (key->push()) return;
-            auto key_ = engine->pop().val();
-            if (value->push()) return;
-            auto value_ = engine->pop().val();
-            objects[key_] = value_;
-        }
-        engine->push(Object{std::make_shared<Dictionary>(std::move(objects))});
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         std::vector<ExprNode*> ret;
         for (auto&& [key, value] : elements) {
@@ -307,21 +224,6 @@ struct StmtsNode : ExprNode {
     std::vector<std::unique_ptr<ExprNode>> stmts;
     StmtsNode(ScriptEngine* engine, SourceLocation location, std::vector<std::unique_ptr<ExprNode>> stmts)
         : ExprNode("{}", engine, location), stmts(std::move(stmts)) {}
-
-    void do_push() const override {
-        ScriptScope scope(engine);
-        push_unscoped();
-    }
-
-    void push_unscoped() const {
-        Operand ret;
-        for (auto&& stmt : stmts) {
-            if (stmt->push()) return;
-            ret = engine->pop();
-        }
-        engine->push(ret);
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         std::vector<ExprNode*> ret;
         for (auto&& stmt : stmts) {
@@ -358,33 +260,6 @@ struct WhileNode : ExprNode {
               std::unique_ptr<ExprNode> cond,
               std::unique_ptr<ExprNode> loop): ExprNode("while", engine, location),
               cond(std::move(cond)), loop(std::move(loop)) {}
-
-    void do_push() const override {
-        ScriptScope scope(engine);
-        std::vector<Object> yield;
-        begin:
-        cond->push();
-        if (engine->jumpTarget == JumpTarget::NONE) {
-            if (!engine->pop().val().asBool()) goto end;
-            loop->push();
-            if (engine->jumpTarget == JumpTarget::NONE)
-                engine->pop().val().yield(yield);
-        }
-        if (engine->jumpTarget == JumpTarget::CONTINUE) {
-            engine->jumpTarget = JumpTarget::NONE;
-            engine->yield.yield(yield);
-        }
-        if (engine->jumpTarget != JumpTarget::NONE) goto end;
-        goto begin;
-        end:
-        if (engine->jumpTarget == JumpTarget::BREAK) {
-            engine->jumpTarget = JumpTarget::NONE;
-            engine->push(engine->yield);
-        } else if (engine->jumpTarget == JumpTarget::NONE) {
-            engine->push(Object{std::make_shared<List>(std::move(yield))});
-        }
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         return {cond.get(), loop.get()};
     }
@@ -403,34 +278,6 @@ struct ForNode : ExprNode {
             std::unique_ptr<ExprNode> iter,
             std::unique_ptr<ExprNode> loop): ExprNode("for " + name, engine, location),
             name(std::move(name)), iter(std::move(iter)), loop(std::move(loop)) {}
-
-    void do_push() const override {
-        ScriptScope scope(engine);
-        std::vector<Object> yield;
-        iter->push();
-        if (engine->jumpTarget == JumpTarget::NONE) {
-            auto iterable = engine->pop().val().asIterable();
-            List::MutLockGuard guard(iterable.get());
-            for (auto&& obj : iterable->elements) {
-                engine->local()[name] = obj;
-                loop->push();
-                if (engine->jumpTarget == JumpTarget::NONE)
-                    engine->pop().val().yield(yield);
-                if (engine->jumpTarget == JumpTarget::CONTINUE) {
-                    engine->jumpTarget = JumpTarget::NONE;
-                    engine->yield.yield(yield);
-                }
-                if (engine->jumpTarget != JumpTarget::NONE) break;
-            }
-        }
-        if (engine->jumpTarget == JumpTarget::BREAK) {
-            engine->jumpTarget = JumpTarget::NONE;
-            engine->push(engine->yield);
-        } else if (engine->jumpTarget == JumpTarget::NONE) {
-            engine->push(Object{std::make_shared<List>(std::move(yield))});
-        }
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         return {iter.get(), loop.get()};
     }
@@ -449,13 +296,6 @@ struct IfElseNode : ExprNode {
                std::unique_ptr<ExprNode> then,
                std::unique_ptr<ExprNode> else_): ExprNode("if-else", engine, location),
                cond(std::move(cond)), then(std::move(then)), else_(std::move(else_)) {}
-
-    void do_push() const override {
-        ScriptScope scope(engine);
-        if (cond->push()) return;
-        engine->pop().val().asBool() ? then->push() : else_->push();
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         return {cond.get(), then.get(), else_.get()};
     }
@@ -474,18 +314,6 @@ struct TryCatchNode : ExprNode {
                  std::string name,
                  std::unique_ptr<ExprNode> catch_): ExprNode("try-catch", engine, location),
                  try_(std::move(try_)), name(std::move(name)), catch_(std::move(catch_)) {}
-
-    void do_push() const override {
-        try {
-            ScriptScope scope(engine);
-            try_->push();
-        } catch (Error& e) {
-            ScriptScope scope(engine);
-            engine->local()[name] = {std::make_shared<String>(e.message)};
-            catch_->push();
-        }
-    }
-
     [[nodiscard]] std::vector<ExprNode*> children() const override {
         return {try_.get(), catch_.get()};
     }
@@ -511,11 +339,6 @@ struct ESNode : ExprNode {
 
     ESNode(ScriptEngine *engine, std::function<R(Args...)> function)
             : ExprNode("<external source>", engine, {}), function(function) {}
-
-    void do_push() const override {
-        engine->push(eval(std::index_sequence_for<Args...>()));
-    }
-
     template<size_t... I>
     Object eval(std::index_sequence<I...>) const {
         auto functor = std::bind(function, engine->findOperand(externalParameterName<I>()).val().template as<Args>()...);

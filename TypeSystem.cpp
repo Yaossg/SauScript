@@ -33,29 +33,7 @@ Object Function::invoke(ScriptEngine *engine, const std::vector<Object> &argumen
         auto&& argument = arguments[i];
         engine->local()[parameter.name] = argument.cast(parameter.type);
     }
-    expr->push();
-    switch (engine->jumpTarget) {
-        default:
-        case JumpTarget::NONE:
-            engine->yield = engine->pop().val();
-            if (auto* stmts = dynamic_cast<StmtsNode*>(expr.get()); stmts && !stmts->stmts.empty()) {
-                engine->jumpFrom = stmts->stmts.back()->location;
-            } else {
-                engine->jumpFrom = expr->location;
-            }
-        case JumpTarget::RETURN:
-            try {
-                engine->jumpTarget = JumpTarget::NONE;
-                engine->push(engine->yield.cast(returnType));
-            } catch (RawError& re) {
-                re.rethrow(engine->jumpFrom);
-            }
-            return engine->pop().val();
-        case JumpTarget::BREAK:
-            runtime("Wild break jump", engine->jumpFrom);
-        case JumpTarget::CONTINUE:
-            runtime("Wild continue jump", engine->jumpFrom);
-    }
+    return {};
 }
 
 Object List::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) const {

@@ -13,16 +13,11 @@ constexpr int LEVEL_POSTFIX = 13;
 constexpr int LEVEL_PRIMARY = 14;
 
 struct Operator {
-    using Unary = std::function<void(ExprNode*)>;
-    using Binary = std::function<void(ExprNode*, ExprNode*)>;
-    using Fn = std::variant<Unary, Binary>;
-
     std::string_view literal;
-    Fn fn;
 
-    [[nodiscard]] Unary const& asUnary() const { return std::get<Unary>(fn); }
-    [[nodiscard]] Binary const& asBinary() const { return std::get<Binary>(fn); }
-    [[nodiscard]] bool isBinary() const { return fn.index(); }
+    [[nodiscard]] bool isRootUnary() const {
+        return std::isalpha(literal[0]);
+    }
 };
 
 extern const std::vector<Operator> OPERATORS[14];

@@ -148,7 +148,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
         case Operators::LEVEL_ROOT: {
             if (current->type == TokenType::PUNCTUATOR && (op = Operators::find(current->punctuator(), level))) {
                 SourceLocation location = current++->location;
-                if (op->isBinary()) syntax("binary operator is used as unary", location);
+                if (!op->isRootUnary()) syntax("binary root operator is used as unary", location);
                 while (current->type == TokenType::LINEBREAK) ++current;
                 return std::make_unique<OpUnaryNode>(this, location, compileExpression(current, level), op);
             }
@@ -156,7 +156,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int l
             if (current->type == TokenType::PUNCTUATOR) {
                 if ((op = Operators::find(current->punctuator(), level))) {
                     SourceLocation location = current++->location;
-                    if (!op->isBinary()) syntax("unary operator is used as binary", location);
+                    if (op->isRootUnary()) syntax("unary root operator is used as binary", location);
                     while (current->type == TokenType::LINEBREAK) ++current;
                     return std::make_unique<OpBinaryNode>(this, location, std::move(expr), compileExpression(current, level), op);
                 } else if (*current == Token::punctuator("?")) {
@@ -329,30 +329,6 @@ std::unique_ptr<StmtsNode> ScriptEngine::compile(std::string const& script) {
 }
 
 Object ScriptEngine::eval(std::string const& script) {
-    try {
-        compile(script)->push_unscoped();
-        Object ret;
-        switch (jumpTarget) {
-            case JumpTarget::BREAK:
-                runtime("Wild break jump", jumpFrom);
-            case JumpTarget::CONTINUE:
-                runtime("Wild continue jump", jumpFrom);
-            case JumpTarget::RETURN:
-                ret = yield;
-                break;
-            case JumpTarget::NONE:
-                ret = pop().val();
-                break;
-        }
-        jumpTarget = JumpTarget::NONE;
-        return ret;
-    } catch (Error& e) {
-        fprintf(err, "%s\n", e.what());
-    } catch (RawError& e) {
-        fprintf(err, "Fatal compiler internal error occurred, message reported: %s", e.message.c_str());
-    }
-    if (pushed) impossible();
-    jumpTarget = JumpTarget::NONE;
     return {};
 }
 
