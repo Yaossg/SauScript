@@ -6,12 +6,12 @@ namespace SauScript::Unicode {
 
 namespace Diagnostics {
 
-[[noreturn]] void malformedASCII() { runtime("Malformed hexadecimal ASCII"); }
-[[noreturn]] void malformedUnicode() { runtime("Malformed hexadecimal Unicode"); }
-[[noreturn]] void malformedLiteral() { runtime("Malformed text literal"); }
-[[noreturn]] void surrogate() { runtime("UTF-16 Surrogate code not allowed"); }
-[[noreturn]] void terminate() { runtime("UTF-8 series terminated accidentally"); }
-[[noreturn]] void overflow() { runtime("Unicode value overflowed"); }
+[[noreturn]] void malformedASCII()      { runtime("Malformed hexadecimal ASCII");           }
+[[noreturn]] void malformedUnicode()    { runtime("Malformed hexadecimal Unicode");         }
+[[noreturn]] void malformedLiteral()    { runtime("Malformed text literal");                }
+[[noreturn]] void surrogate()           { runtime("UTF-16 Surrogate code not allowed");     }
+[[noreturn]] void terminate()           { runtime("UTF-8 series terminated accidentally");  }
+[[noreturn]] void overflow()            { runtime("Unicode value overflowed");              }
 
 }
 
@@ -48,8 +48,12 @@ char32_t parseHexUnicode(const char*& current) {
     return result;
 }
 
-int bytes(char8_t byte) {
-    switch(int ones = std::countl_one((unsigned char) byte)) {
+[[nodiscard]] constexpr int countl_one(char8_t ch) {
+    return std::countl_one((unsigned char) ch);
+}
+
+[[nodiscard]] constexpr int UTF8Length(char8_t byte) {
+    switch(int ones = countl_one(byte)) {
         case 0:
             return 1;
         case 2:
@@ -57,9 +61,14 @@ int bytes(char8_t byte) {
         case 4:
             return ones;
         case 1:
+            Diagnostics::malformedUnicode();
         default:
             Diagnostics::overflow();
     }
+}
+
+[[nodiscard]] constexpr bool notUTF8Continue(char8_t byte) {
+    return countl_one(byte) - 1;
 }
 
 std::string encodeUnicode(char32_t unicode) {
@@ -93,29 +102,29 @@ std::string encodeUnicode(char32_t unicode) {
 char32_t decodeUnicode(const char*& current) {
     char32_t result;
     char8_t ch1 = *current;
-    switch (bytes(ch1)) {
+    switch (UTF8Length(ch1)) {
         case 1:
             result = ch1;
             break;
         case 2: {
             char8_t ch2 = *++current;
-            if (ch2 >> 6 != 0b10) Diagnostics::terminate();
+            if (notUTF8Continue(ch2)) Diagnostics::terminate();
             result = ((ch1 & ~0xC0) << 6) | (ch2 & ~0x80);
         } break;
         case 3: {
             char8_t ch2 = *++current;
-            if (ch2 >> 6 != 0b10) Diagnostics::terminate();
+            if (notUTF8Continue(ch2)) Diagnostics::terminate();
             char8_t ch3 = *++current;
-            if (ch3 >> 6 != 0b10) Diagnostics::terminate();
+            if (notUTF8Continue(ch3)) Diagnostics::terminate();
             result = ((ch1 & ~0xE0) << 12) | ((ch2 & ~0x80) << 6) | (ch3 & ~0x80);
         } break;
         case 4: {
             char8_t ch2 = *++current;
-            if (ch2 >> 6 != 0b10) Diagnostics::terminate();
+            if (notUTF8Continue(ch2)) Diagnostics::terminate();
             char8_t ch3 = *++current;
-            if (ch3 >> 6 != 0b10) Diagnostics::terminate();
+            if (notUTF8Continue(ch3)) Diagnostics::terminate();
             char8_t ch4 = *++current;
-            if (ch4 >> 6 != 0b10) Diagnostics::terminate();
+            if (notUTF8Continue(ch4)) Diagnostics::terminate();
             result = ((ch1 & ~0xF0) << 18) | ((ch2 & ~0x80) << 12) | ((ch3 & ~0x80) << 6) | (ch4 & ~0x80);
         } break;
     }
@@ -127,29 +136,29 @@ int decodeUnicode(std::function<int()> const& current) {
     char32_t result;
     int ch1 = current();
     if (ch1 == EOF) return EOF;
-    switch (bytes(ch1)) {
+    switch (UTF8Length(ch1)) {
         case 1:
             result = ch1;
             break;
         case 2: {
             int ch2 = current();
-            if (ch2 == EOF || ch2 >> 6 != 0b10) Diagnostics::terminate();
+            if (ch2 == EOF || notUTF8Continue(ch2)) Diagnostics::terminate();
             result = ((ch1 & ~0xC0) << 6) | (ch2 & ~0x80);
         } break;
         case 3: {
             int ch2 = current();
-            if (ch2 == EOF || ch2 >> 6 != 0b10) Diagnostics::terminate();
+            if (ch2 == EOF || notUTF8Continue(ch2)) Diagnostics::terminate();
             int ch3 = current();
-            if (ch3 == EOF || ch3 >> 6 != 0b10) Diagnostics::terminate();
+            if (ch3 == EOF || notUTF8Continue(ch3)) Diagnostics::terminate();
             result = ((ch1 & ~0xE0) << 12) | ((ch2 & ~0x80) << 6) | (ch3 & ~0x80);
         } break;
         case 4: {
             int ch2 = current();
-            if (ch2 == EOF || ch2 >> 6 != 0b10) Diagnostics::terminate();
+            if (ch2 == EOF || notUTF8Continue(ch2)) Diagnostics::terminate();
             int ch3 = current();
-            if (ch3 == EOF || ch3 >> 6 != 0b10) Diagnostics::terminate();
+            if (ch3 == EOF || notUTF8Continue(ch3)) Diagnostics::terminate();
             int ch4 = current();
-            if (ch4 == EOF || ch4 >> 6 != 0b10) Diagnostics::terminate();
+            if (ch4 == EOF || notUTF8Continue(ch4)) Diagnostics::terminate();
             result = ((ch1 & ~0xF0) << 18) | ((ch2 & ~0x80) << 12) | ((ch3 & ~0x80) << 6) | (ch4 & ~0x80);
         } break;
     }
@@ -201,7 +210,7 @@ std::string unquoteString(const char*& current) {
     std::string result;
     char8_t ch1;
     while ((ch1 = *++current) != '"') {
-        switch (bytes(ch1)) {
+        switch (UTF8Length(ch1)) {
             case 1:
                 if (ch1 == '\\') {
                     switch (*++current) {
@@ -232,26 +241,26 @@ std::string unquoteString(const char*& current) {
                 break;
             case 2: {
                 char8_t ch2 = *++current;
-                if (ch2 >> 6 != 0b10) Diagnostics::terminate();
+                if (notUTF8Continue(ch2)) Diagnostics::terminate();
                 result += ch1;
                 result += ch2;
             } break;
             case 3: {
                 char8_t ch2 = *++current;
-                if (ch2 >> 6 != 0b10) Diagnostics::terminate();
+                if (notUTF8Continue(ch2)) Diagnostics::terminate();
                 char8_t ch3 = *++current;
-                if (ch3 >> 6 != 0b10) Diagnostics::terminate();
+                if (notUTF8Continue(ch3)) Diagnostics::terminate();
                 result += ch1;
                 result += ch2;
                 result += ch3;
             } break;
             case 4: {
                 char8_t ch2 = *++current;
-                if (ch2 >> 6 != 0b10) Diagnostics::terminate();
+                if (notUTF8Continue(ch2)) Diagnostics::terminate();
                 char8_t ch3 = *++current;
-                if (ch3 >> 6 != 0b10) Diagnostics::terminate();
+                if (notUTF8Continue(ch3)) Diagnostics::terminate();
                 char8_t ch4 = *++current;
-                if (ch4 >> 6 != 0b10) Diagnostics::terminate();
+                if (notUTF8Continue(ch4)) Diagnostics::terminate();
                 result += ch1;
                 result += ch2;
                 result += ch3;
