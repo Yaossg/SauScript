@@ -2,32 +2,6 @@
 
 namespace SauScript {
 
-Operand ScriptEngine::findOperand(const std::string& name) {
-    for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-        auto&& scope = *it;
-        if (scope.contains(name)) return &scope[name];
-    }
-    runtime("reference to undefined variable '" + name + "'");
-}
-
-void ScriptEngine::install(const std::string &name, Object const& fn) {
-    if (!global().contains(name)) {
-        global()[name] = fn;
-    } else {
-        switch (auto&& id = global()[name]; id.type()) {
-            case Type::FUNC: {
-                std::vector<Object> overloads{id, fn};
-                id = {std::make_shared<List>(std::move(overloads))};
-            } break;
-            case Type::LIST:
-                get<list_t>(id.object)->mut().push_back(fn);
-                break;
-            default:
-                runtime("attempt to install external function for a incompatible name");
-        }
-    }
-}
-
 std::unique_ptr<ExprNode> ScriptEngine::compileExpression(Token*& current, int level = Operators::LEVEL_ROOT) {
     switch (Operator const* op; level) {
         case Operators::LEVEL_PRIMARY:
@@ -303,8 +277,7 @@ std::unique_ptr<ExprNode> ScriptEngine::compileFunction(Token*& current) {
     if (*current != Token::punctuator("="))
         syntax("expected '=' after return type", current->location);
     stmt = compileExpression(++current);
-    return std::make_unique<ValNode>(this, location, Object{
-        std::make_shared<Function>(Function{returnType, parameters, std::move(stmt)})});
+    return std::make_unique<FnNode>(this, location, Function{returnType, parameters, std::move(stmt)});
 }
 
 std::unique_ptr<StmtsNode> ScriptEngine::compileStatements(Token*& current) {
@@ -326,10 +299,6 @@ std::unique_ptr<StmtsNode> ScriptEngine::compile(std::string const& script) {
     auto stmts = compileStatements(current);
     if (*current != Token::terminator()) syntax("stray tokens", current->location);
     return stmts;
-}
-
-Object ScriptEngine::eval(std::string const& script) {
-    return {};
 }
 
 }

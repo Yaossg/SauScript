@@ -52,7 +52,17 @@ void file() {
     }
 }
 
+#include "Bytecode.cpp"
+
+
+void bytecode() {
+    SauScript::Bytecode::__main();
+}
+
 int main() {
     //file();
-    repl();
+    //repl();
+    bytecode();
+
+
 }

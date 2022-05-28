@@ -27,12 +27,6 @@ std::string Function::toString() const {
 Object Function::invoke(ScriptEngine *engine, const std::vector<Object> &arguments) const {
     if (parameters.size() != arguments.size())
         runtime("expected " + std::to_string(parameters.size()) + " argument(s) but got " + std::to_string(arguments.size()));
-    ScriptScope scope(engine);
-    for (size_t i = 0; i < arguments.size(); ++i) {
-        auto&& parameter = parameters[i];
-        auto&& argument = arguments[i];
-        engine->local()[parameter.name] = argument.cast(parameter.type);
-    }
     return {};
 }
 
